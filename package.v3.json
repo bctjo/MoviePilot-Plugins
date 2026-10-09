@@ -943,5 +943,18 @@
     "history": {
       "v2.0.0": "V3 专用实现：导入迁移到 app.sdk（events/logging/plugin）；转移记录改用 app.db.oper.transferhistory.TransferHistoryOper；通知消息类型改用 MessageType。功能与 1.0.7 一致。"
     }
+  },
+  "MTeamInviteReminder": {
+    "name": "馒头下级登录提醒",
+    "description": "开发预览版：读取直接被邀账号状态，通过 MP 通知渠道汇总提醒；接口及宿主加载待联调。",
+    "labels": "站点,提醒",
+    "version": "0.1.0",
+    "icon": "https://static.m-team.cc/favicon.ico",
+    "author": "bctjo",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v0.1.0": "开发预览：直接下级检查、30天阈值、封存例外、MP渠道通知、去重记录；真实接口及宿主联调待完成。"
+    }
   }
 }
