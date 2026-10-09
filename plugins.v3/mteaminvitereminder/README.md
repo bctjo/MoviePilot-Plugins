@@ -4,19 +4,18 @@
 
 ## 当前验证状态
 
-版本 `0.1.0`。已完成离线单元测试；**尚未完成真实 MoviePilot V3 加载和馒头接口联调，不应视为已验证可投入日常使用的正式版本**。
+版本 `0.1.1`。38 项离线单元测试通过，并在已有 MoviePilot V3.0.10-1 的容器环境完成真实 API 读取验证。
 
-- 本人资料接口、`uid` 参数、等级及最后浏览字段来自官方 OpenAPI、MoviePilot 适配和参考插件。
-- 邀请接口返回名单的结构、完整性、真实 Key 权限，以及下级资料可见范围尚待验证。
-- 默认名单接口 `/invite/getUserInviteInfo` 只是联调候选，不承诺它在当前主站返回被邀账号。
-- 不识别的结构、疑似分页、缺失 `parentId`、缺失封存或浏览状态均明确报错或标记无法判断，不作为“正常”。
-- 仅支持明确的列表或对象内 `members` / `invitees` / `data` 列表；不是所有 Swagger 响应结构都已支持。需要联调后按实际结构完善适配及分页。
+- 使用 `/invite/getUserInviteHistory`，真实响应为包含 `uid` 的账号列表；`getUserInviteInfo` 返回邀请额度，不能用作下级名单。
+- 已验证本人资料、直接下级 `parentId`、等级、封存状态与 `memberStatus.lastBrowse` 可通过现有站点 Key 查询。
+- 只读站点 API，不修改站点账号。未知结构、疑似分页、资料缺失均明确标记。
+- MP 运行时加载、配置页及通知送达应在安装后验证；实际通知渠道尚未配置时请保留推送关闭。
 
 ## 安装与试运行
 
 插件目录：`plugins.v3/mteaminvitereminder/`，插件 ID：`MTeamInviteReminder`。
 
-第三方市场仓库为 `https://github.com/bctjo/MoviePilot-Plugins`，发布完成后可加入 MP 的 `PLUGIN_MARKET`（多个仓库用英文逗号分隔）。市场读取 `main` 分支以及 `package.v3.json`。代码尚未推送到远端时，添加市场不会出现此插件。
+第三方市场仓库为 `https://github.com/bctjo/MoviePilot-Plugins`，可加入 MP 的 `PLUGIN_MARKET`（多个仓库用英文逗号分隔）。市场读取 `main` 分支以及 `package.v3.json`。
 
 已有 MP V3 可使用 `PLUGIN_LOCAL_REPO_PATHS` 同步本地插件仓库联调，修改后按宿主支持方式重载。不要直接用这个目录覆盖整个 MP 配置目录。
 

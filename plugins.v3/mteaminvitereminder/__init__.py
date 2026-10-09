@@ -19,11 +19,10 @@ DEFAULTS = {
     "enabled": False, "notify": False, "onlyonce": False,
     "cron": "0 9 * * *", "site_id": "", "threshold": 30,
     "api_base": "https://api.m-team.cc/api", "roster_source": "api",
-    "invite_path": "/invite/getUserInviteInfo", "manual_uids": "",
+    "invite_path": "/invite/getUserInviteHistory", "manual_uids": "",
     "exclude_uids": "", "request_interval": 2,
 }
-INVITE_PATHS = ("/invite/getUserInviteInfo", "/invite/getUserInviteHistory",
-                "/invite/getUserInviteSendHistory")
+INVITE_PATHS = ("/invite/getUserInviteHistory",)
 
 
 class MTeamInviteReminder(_PluginBase):
@@ -32,7 +31,7 @@ class MTeamInviteReminder(_PluginBase):
     plugin_name = "馒头下级登录提醒"
     plugin_desc = "检查直接被邀账号等级和最后浏览时间，通过 MP 已配置渠道汇总提醒。"
     plugin_icon = "https://static.m-team.cc/favicon.ico"
-    plugin_version = "0.1.0"
+    plugin_version = "0.1.1"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "mteaminvitereminder_"
@@ -275,8 +274,8 @@ class MTeamInviteReminder(_PluginBase):
             fields.append({"component": kind, "props": {"model": model, "label": label}})
         fields += [
             {"component": "VSelect", "props": {"model": "roster_source", "label": "名单来源", "items": ["api", "manual"]}},
-            {"component": "VSelect", "props": {"model": "invite_path", "label": "邀请查询接口（需联调确认）", "items": list(INVITE_PATHS)}},
-            {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "开发预览版：只检查直接下级。默认关闭推送；API 权限、名单结构和真实宿主加载尚待联调。无需填写 Key，自动读取站点配置。"}},
+            {"component": "VSelect", "props": {"model": "invite_path", "label": "邀请名单接口", "items": list(INVITE_PATHS)}},
+            {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "只检查直接下级，默认关闭推送。自动读取馒头站点 API Key，无需重复填写；推送需先配置 MP 通知渠道。"}},
         ]
         return [{"component": "VForm", "content": fields}], dict(DEFAULTS)
 

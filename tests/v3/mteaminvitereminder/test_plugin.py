@@ -92,9 +92,14 @@ def test_roster_rejects_unknown_and_pagination():
     assert core.api_roster([{"id": "2"}, {"id": 2}]) == [{"id": 2}]
     assert core.api_roster({"data": [{"id": 2}], "total": 1}) == [{"id": 2}]
     assert core.manual_roster("2,3\n2") == [{"id": 2}, {"id": 3}]
-    for data in ({"quota": 20}, {"data": [{"id": 2}], "total": 3}, [{"uid": 2}], [{"id": True}], {"data": [], "totalPages": 2}):
+    for data in ({"quota": 20}, {"data": [{"id": 2}], "total": 3}, [{"id": 2, "uid": 3}], [{"id": True}], {"data": [], "totalPages": 2}):
         with pytest.raises(core.DataError):
             core.api_roster(data)
+
+
+def test_live_history_uid_shape():
+    rows = core.api_roster([{"uid": "2", "username": "test", "status": "NORMAL"}])
+    assert rows[0]["id"] == 2
 
 
 def test_dedupe_new_browse_cycle():

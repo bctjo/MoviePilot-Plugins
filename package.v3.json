@@ -946,14 +946,15 @@
   },
   "MTeamInviteReminder": {
     "name": "馒头下级登录提醒",
-    "description": "开发预览版：读取直接被邀账号状态，通过 MP 通知渠道汇总提醒；接口及宿主加载待联调。",
+    "description": "读取馒头直接被邀账号，按等级与最后浏览时间检查，通过 MP 通知渠道汇总提醒。",
     "labels": "站点,提醒",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "icon": "https://static.m-team.cc/favicon.ico",
     "author": "bctjo",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
+      "v0.1.1": "真实 API 联调：使用邀请历史接口，支持 uid 字段；验证直接下级资料读取。",
       "v0.1.0": "开发预览：直接下级检查、30天阈值、封存例外、MP渠道通知、去重记录；真实接口及宿主联调待完成。"
     }
   }

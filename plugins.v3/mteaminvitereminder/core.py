@@ -54,7 +54,10 @@ def unique_roster(rows):
     for row in rows:
         if not isinstance(row, dict):
             raise DataError("邀请名单含非对象条目")
-        uid = positive_id(row.get("id"))
+        raw_id = row.get("id", row.get("uid"))
+        uid = positive_id(raw_id)
+        if "id" in row and "uid" in row and positive_id(row["uid"]) != uid:
+            raise DataError("邀请名单 ID 字段冲突")
         result[uid] = dict(row, id=uid)
     return list(result.values())
 
