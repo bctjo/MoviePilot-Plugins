@@ -137,12 +137,16 @@ class MTeamInviteReminder(_PluginBase):
         started = monotonic()
         label = f"{path} UID {uid}" if uid else path
         logger.info(f"馒头下级提醒：开始请求 {label}（超时 30 秒）")
-        response = RequestUtils(
-            headers={"x-api-key": site.apikey, "Accept": "application/json",
-                     "User-Agent": site.ua or "MoviePilot/MTeamInviteReminder"},
-            proxies=settings.PROXY if site.proxy else None, timeout=30, verify=True,
-        ).post_res(self._api_base() + path, params={"uid": uid} if uid else {},
-                   allow_redirects=False)
+        try:
+            response = RequestUtils(
+                headers={"x-api-key": site.apikey, "Accept": "application/json",
+                         "User-Agent": site.ua or "MoviePilot/MTeamInviteReminder"},
+                proxies=settings.PROXY if site.proxy else None, timeout=30, verify=True,
+            ).post_res(self._api_base() + path, params={"uid": uid} if uid else {},
+                       allow_redirects=False)
+        except Exception as err:
+            logger.warning(f"馒头下级提醒：请求异常 {label}，{type(err).__name__}，耗时 {monotonic() - started:.1f} 秒")
+            raise DataError(f"API 请求异常（{type(err).__name__}）") from None
         logger.info(f"馒头下级提醒：请求结束 {label}，HTTP {response.status_code if response is not None else '无响应'}，耗时 {monotonic() - started:.1f} 秒")
         if response is None:
             raise DataError("API 请求失败或超时")
@@ -160,8 +164,8 @@ class MTeamInviteReminder(_PluginBase):
         """每个步骤持久化进度，页面关闭或刷新不影响后台任务。"""
         result["stage"] = stage
         result["updated_at"] = datetime.now(TZ).isoformat()
-        self.save_data("last_result", result)
         logger.info(f"馒头下级提醒 [{result.get('run_id', '-')}]：{stage}")
+        self.save_data("last_result", result)
 
     def run_check(self):
         """扫描使用配置和停止信号的快照，避免重配串扰。"""
