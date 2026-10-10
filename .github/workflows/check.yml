@@ -1,0 +1,24 @@
+name: Plugin checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: '3.14'
+      - name: Check market versions and compile source
+        run: |
+          python .github/scripts/check_plugin_versions.py
+          python -m compileall -q plugins.v3
+      - name: Run offline tests with host doubles
+        run: uv run --no-project --with pytest --with 'apscheduler>=3.10,<4' python scripts/test_offline.py
