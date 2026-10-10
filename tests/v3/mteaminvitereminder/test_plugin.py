@@ -31,7 +31,8 @@ def plugin(monkeypatch):
     instance._lock = Lock()
     instance._stop = Event()
     instance._scheduler = None
-    instance._config = dict(DEFAULTS, enabled=True, request_interval=1)
+    instance._config = dict(DEFAULTS, enabled=True)
+    monkeypatch.setattr(module, "SiteOper", Mock(return_value=SimpleNamespace(list_order_by_pri=lambda: [])))
     instance._config_error = None
     data = {}
     instance.get_data = lambda key: deepcopy(data.get(key))
@@ -184,14 +185,6 @@ def test_bad_child_is_unknown_not_normal(plugin):
     assert plugin.post_message.call_count == 1
 
 
-def test_exclusions_and_manual_parent_verification(plugin):
-    configure_scan(plugin, {2: profile(), 3: profile(uid=3)})
-    plugin._config.update(roster_source="manual", manual_uids="2,3", exclude_uids="2")
-    plugin.run_check()
-    assert plugin.get_data("last_result")["rows"][0]["reason"] == "已排除"
-    assert not any(call.args[2:] == (2,) for call in plugin._request.call_args_list)
-
-
 def test_api_request_tls_header_uid_and_no_redirect(plugin, monkeypatch):
     transport = Mock()
     transport.post_res.return_value = SimpleNamespace(status_code=200, json=lambda: {"code": "0", "data": {"id": 2}})
@@ -208,11 +201,10 @@ def test_api_request_tls_header_uid_and_no_redirect(plugin, monkeypatch):
         plugin._request(site, "/member/profile")
 
 
-@pytest.mark.parametrize("url", ["http://api.m-team.cc/api", "https://api.m-team.cc.attacker.invalid/api", "https://u:p@api.m-team.cc/api", "https://api.m-team.cc/api?token=x"])
-def test_key_destination_restricted(plugin, url):
-    plugin._config["api_base"] = url
-    with pytest.raises(ValueError):
-        plugin._api_base()
+def test_internal_endpoint_settings_are_ignored(plugin):
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, api_base="https://attacker.invalid/api", invite_path="/bad"))
+    assert plugin._api_base() == "https://api.m-team.cc/api"
+    assert "api_base" not in plugin._config
 
 
 def test_lifecycle_invalid_cron_no_task_and_reset_one_shot(plugin):
@@ -238,5 +230,78 @@ def test_lock_prevents_overlapping_checks(plugin):
 def test_details_use_text_not_html(plugin):
     plugin.save_data("last_result", {"rows": [{"uid": 2, "username": "<script>x</script>", "reason": "待提醒"}]})
     page = plugin.get_page()
-    assert page[1]["props"]["text"].startswith("UID 2")
-    assert "html" not in repr(page)
+    assert "<script>x</script>" in repr(page)
+    assert "'html'" not in repr(page)
+    assert "VTable" in repr(page)
+
+
+def test_form_uses_grid_and_hides_internal_fields(plugin):
+    form, defaults = plugin.get_form()
+    assert "VRow" in repr(form) and "VCol" in repr(form)
+    for key in ("api_base", "invite_path", "roster_source", "manual_uids", "request_interval", "exclude_uids"):
+        assert key not in repr(form) and key not in defaults
+
+
+def test_resaving_enabled_config_keeps_inflight_scan_and_snapshot(plugin):
+    configure_scan(plugin, {2: profile(), 3: profile(uid=3)})
+    old_event = plugin._stop
+    request = plugin._request.side_effect
+    def saving_request(site, path, uid=None):
+        if uid == 2:
+            plugin.init_plugin(dict(DEFAULTS, enabled=True, notify=True, threshold=35))
+            assert plugin._stop is old_event
+        return request(site, path, uid)
+    plugin._request.side_effect = saving_request
+    plugin.run_check()
+    result = plugin.get_data("last_result")
+    assert result["status"] == "completed" and len(result["rows"]) == 2
+    assert all(row["eligible"] for row in result["rows"])
+    plugin.post_message.assert_not_called()
+
+
+def test_disabling_during_scan_preserves_partial_results(plugin):
+    configure_scan(plugin, {2: profile(), 3: profile(uid=3)})
+    class FastEvent(Event):
+        def wait(self, timeout=None):
+            return self.is_set()
+    plugin._stop = FastEvent()
+    request = plugin._request.side_effect
+    def disabling_request(site, path, uid=None):
+        if uid == 2:
+            plugin.init_plugin(dict(DEFAULTS, enabled=False))
+            plugin.init_plugin(dict(DEFAULTS, enabled=True))
+        return request(site, path, uid)
+    plugin._request.side_effect = disabling_request
+    plugin.run_check()
+    result = plugin.get_data("last_result")
+    assert result["status"] == "stopped" and len(result["rows"]) == 1
+    assert result["total"] == 2 and result["error"]
+
+
+def test_unexpected_child_error_is_logged_and_scan_continues(plugin):
+    configure_scan(plugin, {2: profile(), 3: profile(uid=3)})
+    request = plugin._request.side_effect
+    def failed_request(site, path, uid=None):
+        if uid == 2:
+            raise RuntimeError("private-token")
+        return request(site, path, uid)
+    plugin._request.side_effect = failed_request
+    plugin.run_check()
+    result = plugin.get_data("last_result")
+    assert len(result["rows"]) == 2 and result["status"] == "completed"
+    assert "RuntimeError" in result["rows"][0]["reason"]
+    assert "private-token" not in repr(result)
+
+
+def test_progress_persisted_before_each_child_request(plugin):
+    configure_scan(plugin, {2: profile()})
+    request = plugin._request.side_effect
+    def observe_request(site, path, uid=None):
+        if uid == 2:
+            current = plugin.get_data("last_result")
+            assert current["status"] == "running"
+            assert "正在检查 1/1" in current["stage"]
+        return request(site, path, uid)
+    plugin._request.side_effect = observe_request
+    plugin.run_check()
+    assert plugin.get_data("last_result")["status"] == "completed"
