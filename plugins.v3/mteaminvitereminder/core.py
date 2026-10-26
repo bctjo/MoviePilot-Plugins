@@ -1,6 +1,5 @@
 """与 MoviePilot 无关的资料校验及提醒判断。"""
 from datetime import datetime, timedelta
-from hashlib import sha256
 import re
 from zoneinfo import ZoneInfo
 
@@ -120,9 +119,3 @@ def assess(profile, row, owner_id, now, threshold=30, manual=False):
     if idle <= timedelta(days=threshold):
         return dict(common, eligible=False, reason="未超过提醒阈值")
     return dict(common, eligible=True, reason="待提醒")
-
-
-def delivery_key(owner_id, uid, result):
-    """以本人、下级和最后浏览时间识别一次未登录周期。"""
-    source = f"{owner_id}|{uid}|{result['last_browse']}"
-    return sha256(source.encode()).hexdigest()
