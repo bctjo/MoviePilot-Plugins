@@ -40,10 +40,9 @@ def parse_time(value):
 
 
 def manual_roster(text):
-    """手工 UID 名单仍须通过个人资料的 parentId 校验。"""
-    rows = [{"id": positive_id(token)} for token in re.split(r"[\s,]+", str(text or "").strip()) if token]
-    if not rows:
-        raise DataError("手工 UID 名单为空")
+    """解析可选的手工 UID 名单，保留顺序并去重。"""
+    source = "" if text is None else str(text).strip()
+    rows = [{"id": positive_id(token)} for token in re.split(r"[\s,，]+", source) if token]
     return unique_roster(rows)
 
 
@@ -85,13 +84,14 @@ def api_roster(data):
 
 
 def assess(profile, row, owner_id, now, threshold=30, manual=False):
-    """按完整时间差判断 >30 天，仅对有可靠证据的直接下级给出待提醒。"""
+    """按完整时间差判断；只有显式手动添加的账号免于下级关系校验。"""
     uid = positive_id(row["id"])
     if positive_id(profile.get("id")) != uid or uid == owner_id:
         raise DataError("资料 UID 不匹配或是本人")
-    parent = profile.get("parentId")
-    if positive_id(parent) != owner_id:
-        raise DataError("无法确认该账号是本人的直接下级")
+    if not manual:
+        parent = profile.get("parentId")
+        if positive_id(parent) != owner_id:
+            raise DataError("无法确认该账号是本人的直接下级")
     if not boolean(profile.get("enabled")):
         return {"eligible": False, "reason": "账号已禁用"}
     try:

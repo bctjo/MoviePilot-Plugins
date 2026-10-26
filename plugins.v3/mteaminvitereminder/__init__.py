@@ -1,4 +1,4 @@
-"""检查直接被邀账号，通过 MoviePilot 渠道汇总或馒头站内信逐人提醒。"""
+"""检查直接下级及手动添加的账号，通过 MoviePilot 渠道汇总提醒。"""
 from datetime import datetime, timedelta
 from threading import Event, Lock
 from urllib.parse import urlparse
@@ -14,11 +14,11 @@ from app.sdk.plugin import _PluginBase
 from app.db.oper.site import SiteOper
 from app.schemas.types import MessageType
 
-from .core import TZ, DataError, api_roster, assess, parse_time, positive_id
+from .core import TZ, DataError, api_roster, assess, manual_roster, parse_time, positive_id
 
 DEFAULTS = {
-    "enabled": False, "notify": False, "site_notify": False, "onlyonce": False,
-    "cron": "0 9 * * *", "site_id": "", "threshold": 30,
+    "enabled": False, "notify": False, "onlyonce": False,
+    "cron": "0 9 * * *", "site_id": "", "threshold": 30, "manual_uids": "",
 }
 API_BASE = "https://api.m-team.cc/api"
 INVITE_PATH = "/invite/getUserInviteHistory"
@@ -26,12 +26,12 @@ REQUEST_INTERVAL = 2
 
 
 class MTeamInviteReminder(_PluginBase):
-    """定时检查直接下级，通过宿主通知邀请人或直接发送馒头站内信。"""
+    """定时检查直接下级和手动添加的账号，通过宿主汇总提醒。"""
 
     plugin_name = "馒头下级登录提醒"
-    plugin_desc = "检查直接被邀账号等级和最后浏览时间，通过 MP 渠道或馒头站内信提醒。"
+    plugin_desc = "检查直接下级及手动添加账号的等级和最后浏览时间，通过 MP 渠道汇总提醒。"
     plugin_icon = "https://static.m-team.cc/favicon.ico"
-    plugin_version = "0.1.4"
+    plugin_version = "0.1.5"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "mteaminvitereminder_"
@@ -60,6 +60,9 @@ class MTeamInviteReminder(_PluginBase):
             if not 1 <= new_config["threshold"] < 40:
                 raise ValueError("提醒阈值应为 1～39 天")
             CronTrigger.from_crontab(new_config["cron"], timezone=TZ)
+            manual_roster(new_config["manual_uids"])
+        except DataError:
+            error = "配置无效：额外提醒账号 UID 应为正整数，多个 UID 用英文逗号分隔"
         except (ValueError, TypeError):
             error = "配置无效：请检查周期表达式及 1～39 天的提醒阈值"
         self._config = new_config
@@ -72,7 +75,7 @@ class MTeamInviteReminder(_PluginBase):
         if once:
             self._config["onlyonce"] = False
             self.update_config(dict(self._config))
-        logger.info(f"馒头下级提醒：配置已保存，启用={self.get_state()}，MP 推送={bool(new_config['notify'])}，站内信={bool(new_config['site_notify'])}；正在执行的扫描使用启动时配置")
+        logger.info(f"馒头下级提醒：配置已保存，启用={self.get_state()}，MP 推送={bool(new_config['notify'])}；正在执行的扫描使用启动时配置")
         if error:
             logger.warning("馒头下级提醒：" + error)
         if once and self.get_state():
@@ -131,8 +134,8 @@ class MTeamInviteReminder(_PluginBase):
             raise DataError("馒头站点未配置 API Key")
         return sites[0]
 
-    def _request(self, site, path, uid=None, data=None):
-        """资料使用 query uid，站内信使用表单；不记录 Key、正文或站点错误原文。"""
+    def _request(self, site, path, uid=None):
+        """使用 query uid 查询资料；不记录 Key、原始响应或站点错误原文。"""
         started = monotonic()
         label = f"{path} UID {uid}" if uid else path
         logger.info(f"馒头下级提醒：开始请求 {label}（超时 30 秒）")
@@ -142,7 +145,7 @@ class MTeamInviteReminder(_PluginBase):
                          "User-Agent": site.ua or "MoviePilot/MTeamInviteReminder"},
                 proxies=settings.PROXY if site.proxy else None, timeout=30, verify=True,
             ).post_res(self._api_base() + path, params={"uid": uid} if uid else {},
-                       data=data, allow_redirects=False)
+                       allow_redirects=False)
         except Exception as err:
             logger.warning(f"馒头下级提醒：请求异常 {label}，{type(err).__name__}，耗时 {monotonic() - started:.1f} 秒")
             raise DataError(f"API 请求异常（{type(err).__name__}）") from None
@@ -178,8 +181,7 @@ class MTeamInviteReminder(_PluginBase):
         started = monotonic()
         result = {"run_id": uuid4().hex[:8], "checked_at": datetime.now(TZ).isoformat(),
                   "rows": [], "total": None, "status": "running", "error": None,
-                  "notification": "未发送",
-                  "site_notification": "未发送" if config["site_notify"] else None}
+                  "notification": "未发送"}
         try:
             self._progress(result, "开始检查")
             if stop.is_set():
@@ -224,9 +226,15 @@ class MTeamInviteReminder(_PluginBase):
             result["error"] = "检查已停止，结果不完整"
             return
         self._progress(result, "正在读取直接下级名单")
-        roster = api_roster(self._request(site, INVITE_PATH, owner_id))
+        roster = [dict(row, manual=False) for row in api_roster(self._request(site, INVITE_PATH, owner_id))]
+        direct_count = len(roster)
+        seen = {row["id"] for row in roster}
+        for row in manual_roster(config["manual_uids"]):
+            if row["id"] not in seen:
+                roster.append(dict(row, manual=True))
+                seen.add(row["id"])
         result["total"] = len(roster)
-        self._progress(result, f"取得 {len(roster)} 个直接下级，开始逐人检查")
+        self._progress(result, f"取得 {direct_count} 个直接下级，追加 {len(roster) - direct_count} 个手动账号，共 {len(roster)} 人，开始逐人检查")
         pending = []
         now = datetime.now(TZ)
         for index, row in enumerate(roster, 1):
@@ -234,17 +242,17 @@ class MTeamInviteReminder(_PluginBase):
                 result["error"] = "检查已停止，结果不完整"
                 return
             uid = row["id"]
-            view = {"uid": uid, "username": "", "eligible": False}
+            view = {"uid": uid, "username": "", "eligible": False,
+                    "source": "手动添加" if row["manual"] else "直接下级"}
             try:
                 self._progress(result, f"正在检查 {index}/{len(roster)}：UID {uid}")
                 profile = self._request(site, "/member/profile", uid)
                 if not isinstance(profile, dict):
-                    raise DataError("下级资料格式异常")
+                    raise DataError("账号资料格式异常")
                 view["username"] = str(profile.get("username") or uid)[:80]
-                view.update(assess(profile, row, owner_id, now, config["threshold"]))
+                view.update(assess(profile, row, owner_id, now, config["threshold"], manual=row["manual"]))
                 if view["eligible"]:
                     view["notification"] = "待通知" if config["notify"] else "未开启"
-                    view["site_notification"] = "待发送" if config["site_notify"] else "未开启"
                     pending.append(view)
             except DataError as err:
                 view["reason"] = "无法判断：" + str(err)
@@ -255,10 +263,8 @@ class MTeamInviteReminder(_PluginBase):
         if stop.is_set():
             result["error"] = "检查已停止，结果不完整"
             return
-        if config["site_notify"] and not self._send_site_reminders(site, result, pending, stop):
-            return
         if not config["notify"]:
-            result["notification"] = "MP 推送未开启" if config["site_notify"] else "预览模式：未推送"
+            result["notification"] = "预览模式：未推送"
             return
         # API 拒绝、隐私设置等导致的未知状态也要告知邀请人，不能静默漏检。
         unknown = [row for row in result["rows"] if row.get("reason", "").startswith("无法判断")]
@@ -266,8 +272,6 @@ class MTeamInviteReminder(_PluginBase):
             result["notification"] = "本次无待提醒账号"
             return
         summary = f"已检查 {len(result['rows'])} 人，符合提醒 {len(pending)} 人，无法判断 {len(unknown)} 人。"
-        if config["site_notify"]:
-            summary += "\n" + result["site_notification"]
         # 每批最多 15 人，只有确实提交的批次才标记，避免截断正文后漏报。
         for offset in range(0, max(len(pending), 1), 15):
             if stop.is_set():
@@ -279,58 +283,25 @@ class MTeamInviteReminder(_PluginBase):
                 lines.append(f"{row['username']}（UID {row['uid']}）：未浏览约 {row['days']} 天；适用 {row['limit']} 天期限。")
             if offset == 0 and unknown:
                 lines.append("无法判断 UID：" + ", ".join(str(row["uid"]) for row in unknown[:30]) + "；原因见插件详情。")
-            lines.append("请提醒下级本人用浏览器访问站点；做种和 API 查询不算登录。完整结果见插件详情。")
+            lines.append("请提醒账号本人用浏览器访问站点；做种和 API 查询不算登录。完整结果见插件详情。")
             self._progress(result, f"正在提交 MP 通知，第 {offset // 15 + 1} 批，{len(batch)} 个账号")
             self.post_message(mtype=MessageType.SiteMessage, title="馒头下级登录检查", text="\n".join(lines))
             for row in batch:
                 row["notification"] = "已提交 MP 通知渠道"
         result["notification"] = "已提交 MP 通知渠道（不代表收件端送达）"
 
-    def _send_site_reminders(self, site, result, pending, stop):
-        """逐人发送站内信；单个收件人失败不阻断其他下级或 MP 汇总。"""
-        sent = failed = 0
-        result["site_notification"] = f"馒头站内信：已发送 0 / {len(pending)} 人，失败 0 人"
-        for index, row in enumerate(pending, 1):
-            if stop.wait(REQUEST_INTERVAL):
-                result["error"] = "检查已停止，站内信可能未全部发送"
-                return False
-            self._progress(result, f"正在发送馒头站内信 {index}/{len(pending)}：UID {row['uid']}")
-            try:
-                self._request(site, "/msg/send", data={
-                    "to": row["uid"], "title": "馒头账号登录提醒",
-                    "content": f"你好，你的账号已约 {row['days']} 天未使用浏览器访问馒头，当前适用 {row['limit']} 天的未浏览保留期限。\n"
-                               "请尽快用浏览器访问并浏览站点页面；仅做种和 API 查询不算站点浏览。\n"
-                               "本消息由邀请人的 MoviePilot 插件自动发送，如已恢复浏览，请忽略。",
-                    "options": ["saveMsg"],
-                })
-            except DataError as err:
-                row["site_notification"] = "发送失败：" + str(err)
-                failed += 1
-            except Exception as err:
-                row["site_notification"] = f"发送失败：请求异常（{type(err).__name__}）"
-                failed += 1
-            else:
-                row["site_notification"] = "已发送"
-                sent += 1
-            result["site_notification_failed"] = failed
-            result["site_notification"] = f"馒头站内信：已发送 {sent} / {len(pending)} 人，失败 {failed} 人"
-            self._progress(result, f"馒头站内信 UID {row['uid']}：{row['site_notification']}")
-        if stop.is_set():
-            result["error"] = "检查已停止，站内信可能未全部发送"
-            return False
-        return True
-
     def get_form(self):
         """按官方插件的 VRow/VCol 结构排版，仅展示日常设置。"""
         def col(component, width=6):
             return {"component": "VCol", "props": {"cols": 12, "md": width}, "content": [component]}
 
-        switches = [col({"component": "VSwitch", "props": {"model": model, "label": label, "hide-details": True}}, 6)
+        switches = [col({"component": "VSwitch", "props": {"model": model, "label": label, "hide-details": True}}, 4)
                     for model, label in (("enabled", "启用插件"), ("onlyonce", "保存后立即检查一次"),
-                                         ("notify", "通过 MP 渠道推送给我"), ("site_notify", "通过馒头站内信提醒下级"))]
+                                         ("notify", "通过 MP 渠道推送给我"))]
         settings_row = [
             col({"component": "VCronField", "props": {"model": "cron", "label": "检查周期（北京时间）", "hint": "默认每天 09:00 检查", "persistent-hint": True}}, 8),
             col({"component": "VTextField", "props": {"model": "threshold", "label": "未浏览提醒阈值（天）", "type": "number", "min": 1, "max": 39, "hint": "超过完整 30 天时提醒", "persistent-hint": True}}, 4),
+            col({"component": "VTextField", "props": {"model": "manual_uids", "label": "额外提醒账号 UID", "placeholder": "例如：123456,234567", "hint": "多个 UID 用英文逗号分隔，追加到下级名单后；可添加非下级账号，自动去重。", "persistent-hint": True, "clearable": True}}, 12),
         ]
         sites = []
         for site in SiteOper().list_order_by_pri():
@@ -342,7 +313,7 @@ class MTeamInviteReminder(_PluginBase):
         return [{"component": "VForm", "props": {"class": "pa-2"}, "content": [
             {"component": "VRow", "props": {"class": "mb-2"}, "content": switches},
             {"component": "VRow", "props": {"class": "mb-2"}, "content": settings_row},
-            {"component": "VRow", "content": [col({"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "自动读取馒头站点和 API Key，仅检查直接下级。两种通知可单独开启，每次检查均提醒符合条件的账号；均关闭时仅预览。站内信只发给符合条件的下级，MP 推送还会汇总无法判断的账号。"}}, 12)]},
+            {"component": "VRow", "content": [col({"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "自动读取馒头站点和 API Key，检查直接下级及手动添加的账号。每次检查均通过 MP 渠道汇总符合条件或无法判断的账号；关闭推送时仅预览。"}}, 12)]},
         ]}], dict(DEFAULTS)
 
     @staticmethod
@@ -404,12 +375,11 @@ class MTeamInviteReminder(_PluginBase):
             cells = [
                 {"component": "td", "props": {"class": "py-3"}, "content": [
                     {"component": "div", "text": str(row.get("username") or "—")},
-                    {"component": "div", "props": {"class": "text-caption text-medium-emphasis"}, "text": f"UID {row['uid']}"},
+                    {"component": "div", "props": {"class": "text-caption text-medium-emphasis"}, "text": f"UID {row['uid']} · {row.get('source') or '直接下级'}"},
                 ]},
                 {"component": "td", "text": f"{row['days']} 天" if row.get("days") is not None else "—"},
                 {"component": "td", "props": {"class": "text-warning" if row.get("eligible") else ""}, "text": row.get("reason", "—")},
                 {"component": "td", "text": row.get("notification", "—")},
-                {"component": "td", "text": row.get("site_notification", "—")},
                 {"component": "td", "text": self._display_time(row.get("last_browse"))},
             ]
             table_rows.append({"component": "tr", "content": cells})
@@ -418,12 +388,10 @@ class MTeamInviteReminder(_PluginBase):
         ]
         if message:
             content.append({"component": "VAlert", "props": {"type": "warning" if self._config_error or result.get("error") else "info", "variant": "tonal", "class": "mb-4", "text": message}})
-        if result.get("site_notification"):
-            content.append({"component": "VAlert", "props": {"type": "warning" if result.get("site_notification_failed") else "info", "variant": "tonal", "class": "mb-4", "text": result["site_notification"]}})
         if table_rows:
             content.append({"component": "div", "props": {"class": "overflow-x-auto"}, "content": [
-                {"component": "VTable", "props": {"hover": True, "style": "min-width: 880px"}, "content": [
-                    {"component": "thead", "content": [{"component": "tr", "content": [{"component": "th", "props": {"class": "text-start"}, "text": title} for title in ("下级账号", "未浏览", "判断结果", "MP 通知", "馒头站内信", "最后浏览时间")]}]},
+                {"component": "VTable", "props": {"hover": True, "style": "min-width: 720px"}, "content": [
+                    {"component": "thead", "content": [{"component": "tr", "content": [{"component": "th", "props": {"class": "text-start"}, "text": title} for title in ("检查账号", "未浏览", "判断结果", "MP 通知", "最后浏览时间")]}]},
                     {"component": "tbody", "content": table_rows},
                 ]},
             ]})
