@@ -1,5 +1,6 @@
 """宿主、HTTP、调度和通知边界均使用替身，不访问真实客户或站点。"""
 from copy import deepcopy
+from decimal import Decimal
 from threading import Event, Lock
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -143,7 +144,7 @@ def test_task_volume_recomputes_progress_after_reconfigure_and_reaches_notificat
     assert row["initial_bytes"] == 40 * TB and row["percent"] == 40
     assert row["task_uploaded_bytes"] == 4 * TB
     page = repr(plugin.get_page())
-    assert "初始上传量 40.00 TB" in page and "已完成 4.00 TB / 10.00 TB" in page
+    assert "50.00 TB" in page and "40.0%" in page
     assert "本次已完成：4.00 TB" in plugin.post_message.call_args.kwargs["text"]
     plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(initial="40", total="20")))
     plugin.run_check()
@@ -172,6 +173,43 @@ def test_notification_submission_status_is_hidden(plugin):
     plugin.run_check()
     assert plugin.post_message.call_count == 1
     assert "已提交" not in repr(plugin.get_page())
+
+
+@pytest.mark.parametrize("amount,expected_text", [
+    ("5.020", "+10.24 GB"), ("5.010", "+0.00 B"), ("5.000", "-10.24 GB"),
+])
+def test_nexus_displayed_upload_has_delta_after_second_success(plugin, monkeypatch, amount, expected_text):
+    def response(value):
+        body = (f'<h1><a href="userdetails.php?id=77">sample</a></h1>'
+                f'<table><tr><td>上传量</td><td>{value} TB</td></tr></table>')
+        return SimpleNamespace(status_code=200, content=body.encode())
+    client = Mock()
+    client.get_res.side_effect = [response("5.010"), response(amount)]
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(site_id="20", total="10")))
+    plugin.run_check()
+    assert plugin.get_data("last_result")["rows"][0].get("delta_bytes") is None
+    plugin.run_check()
+    row = plugin.get_data("last_result")["rows"][0]
+    expected = int(Decimal(amount) * TB) - int(Decimal("5.010") * TB)
+    assert row["approximate"] and row["delta_bytes"] == expected
+    assert bool(row.get("warning")) == (expected < 0)
+    assert expected_text in repr(plugin.get_page())
+    assert f"较上次：{expected_text}" in plugin.post_message.call_args.kwargs["text"]
+
+
+def test_nexus_failed_round_keeps_last_success_for_next_delta(plugin):
+    before = dict(sample(5 * TB), approximate=True)
+    after = dict(sample(6 * TB), approximate=True)
+    plugin._read_user = Mock(side_effect=[before, DataError("站点限流"), after])
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(site_id="20", total="10")))
+    plugin.run_check()
+    plugin.run_check()
+    assert plugin.get_data("last_result")["rows"][0]["status"] == "error"
+    assert plugin.get_data("last_success")["20:77"]["uploaded_bytes"] == 5 * TB
+    plugin.run_check()
+    row = plugin.get_data("last_result")["rows"][0]
+    assert row["status"] == "pending" and row["delta_bytes"] == TB
 
 
 def test_deleted_site_does_not_query_another_site(plugin, monkeypatch):

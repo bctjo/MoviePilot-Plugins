@@ -5,7 +5,7 @@
 | 插件 | 版本 | 用途 |
 | --- | --- | --- |
 | [馒头下级登录提醒](plugins.v3/mteaminvitereminder/README.md) | 0.1.5 | 检查馒头直接下级及手动添加的账号，通过 MP 渠道汇总提醒 |
-| [上传量进度监控](plugins.v3/uploadprogressmonitor/README.md) | 0.1.4 | 为每位用户配置站点、UID、初始上传量和任务总量，每小时汇总进度 |
+| [上传量进度监控](plugins.v3/uploadprogressmonitor/README.md) | 0.1.5 | 为每位用户配置站点、UID、初始上传量和任务总量，每小时汇总进度 |
 
 ## 安装
 

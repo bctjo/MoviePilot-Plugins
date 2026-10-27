@@ -6,8 +6,6 @@ def node(component, text=None, props=None, content=None):
     result = {"component": component}
     if text is not None:
         result["text"] = str(text)
-    if component in {"VTextField", "VSelect"}:
-        props = {"density": "compact", "hide-details": "auto", **(props or {})}
     if props:
         result["props"] = props
     if content is not None:
@@ -114,17 +112,12 @@ def details_page(result, error=None):
                                  node("VProgressLinear", props={"model-value": row["percent"], "height": 5, "rounded": True, "color": section_color}),
                                  node("div", f"剩余 {format_bytes(row['remaining_bytes'])}" if key == "pending" else f"发现达标：{row.get('completed_at') or '—'}",
                                       {"class": "text-caption text-medium-emphasis mt-1"})]
-                progress_cell.append(node("div", f"已完成 {format_bytes(row['task_uploaded_bytes'])} / {format_bytes(row['total_bytes'])}",
-                                          {"class": "text-caption text-medium-emphasis mt-1"}))
                 for note in (row.get("precision_note"), row.get("warning")):
                     if note:
                         current.append(node("div", note, {"class": "text-caption text-warning"}))
             delta = row.get("delta_bytes")
-            target = [node("div", format_bytes(row["target_bytes"]))]
-            target.extend([node("div", f"任务总量 {format_bytes(row['total_bytes'])}", {"class": "text-caption text-medium-emphasis"}),
-                           node("div", f"初始上传量 {format_bytes(row['initial_bytes'])}", {"class": "text-caption text-medium-emphasis"})])
             cells = [node("td", props={"class": "py-3"}, content=account), node("td", row["site_name"]),
-                     node("td", content=current), node("td", content=target),
+                     node("td", content=current), node("td", format_bytes(row["target_bytes"])),
                      node("td", props={"style": "min-width: 180px"}, content=progress_cell),
                      node("td", ("+" if delta is not None and delta >= 0 else "") + format_bytes(delta)),
                      node("td", row.get("checked_at", "—"))]

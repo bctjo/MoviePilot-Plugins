@@ -35,7 +35,7 @@ class UploadProgressMonitor(_PluginBase):
     plugin_name = "上传量进度监控"
     plugin_desc = "为每位用户绑定站点、初始上传量和任务总量，每小时汇总待完成、已完成及查询失败的任务。"
     plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.svg"
-    plugin_version = "0.1.4"
+    plugin_version = "0.1.5"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "uploadprogressmonitor_"
@@ -244,7 +244,7 @@ class UploadProgressMonitor(_PluginBase):
                 sample = self._read_user(site, task["uid"])
                 row.update(sample)
                 row.update(progress(sample, task["initial_bytes"], task["total_bytes"]))
-                if old.get("uploaded_bytes") is not None and not old.get("approximate") and not sample["approximate"]:
+                if old.get("uploaded_bytes") is not None:
                     row["delta_bytes"] = sample["uploaded_bytes"] - old["uploaded_bytes"]
                     if row["delta_bytes"] < 0:
                         row["warning"] = "累计上传量较上次下降，请核实站点统计"
