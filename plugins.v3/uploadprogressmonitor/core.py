@@ -341,11 +341,10 @@ def notification_texts(result, limit=2800):
                 if row.get("last_uploaded_bytes") is not None:
                     block += f"\n上次成功：{format_bytes(row['last_uploaded_bytes'])}（{row['last_success_at']}）"
             else:
-                prefix = "约 " if row["approximate"] else ""
-                block += f"当前上传量：{prefix}{format_bytes(row['uploaded_bytes'])}\n目标上传量：{format_bytes(row['target_bytes'])}"
+                block += f"当前上传量：{format_bytes(row['uploaded_bytes'])}\n目标上传量：{format_bytes(row['target_bytes'])}"
                 if row.get("total_bytes") is not None:
                     block += (f"\n任务总量：{format_bytes(row['total_bytes'])} · 初始：{format_bytes(row['initial_bytes'])}"
-                              f"\n本次已完成：{prefix}{format_bytes(row['task_uploaded_bytes'])}")
+                              f"\n本次已完成：{format_bytes(row['task_uploaded_bytes'])}")
                 if status == "pending":
                     block += f"\n进度：{row['percent']}% · 剩余：{format_bytes(row['remaining_bytes'])}"
                 if row.get("delta_bytes") is not None:

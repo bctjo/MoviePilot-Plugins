@@ -112,13 +112,13 @@ def details_page(result, error=None):
                     current.append(node("div", f"上次成功：{format_bytes(row['last_uploaded_bytes'])}（{row['last_success_at']}）", {"class": "text-caption text-medium-emphasis"}))
                 progress_cell = [node("span", "—")]
             else:
-                current = [node("div", ("约 " if row["approximate"] else "") + format_bytes(row["uploaded_bytes"]))]
+                current = [node("div", format_bytes(row["uploaded_bytes"]))]
                 progress_cell = [node("div", f"{row['percent']}%", {"class": "text-body-2 mb-1"}),
                                  node("VProgressLinear", props={"model-value": row["percent"], "height": 5, "rounded": True, "color": section_color}),
                                  node("div", f"剩余 {format_bytes(row['remaining_bytes'])}" if key == "pending" else f"首次发现达标：{row.get('completed_at') or '—'}",
                                       {"class": "text-caption text-medium-emphasis mt-1"})]
                 if row.get("total_bytes") is not None:
-                    progress_cell.append(node("div", "已完成 " + ("约 " if row["approximate"] else "") + f"{format_bytes(row['task_uploaded_bytes'])} / {format_bytes(row['total_bytes'])}",
+                    progress_cell.append(node("div", f"已完成 {format_bytes(row['task_uploaded_bytes'])} / {format_bytes(row['total_bytes'])}",
                                               {"class": "text-caption text-medium-emphasis mt-1"}))
                 else:
                     progress_cell.append(node("div", "按累计上传量计算", {"class": "text-caption text-medium-emphasis mt-1"}))
@@ -146,7 +146,4 @@ def details_page(result, error=None):
                 node("tbody", content=table_rows),
             ])]),
         ]))
-    if any(row.get("approximate") for row in rows):
-        content.append(node("div", "标注“约”的上传量来自站点格式化显示；页面精度不足时保留待完成，避免提前判定达标。",
-                            {"class": "text-caption text-medium-emphasis"}))
     return [node("div", props={"class": "pa-3"}, content=content)]
