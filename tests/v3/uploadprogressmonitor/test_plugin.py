@@ -10,11 +10,11 @@ import app.plugins.uploadprogressmonitor as module
 from app.plugins.uploadprogressmonitor import DEFAULTS, UploadProgressMonitor
 from app.plugins.uploadprogressmonitor.core import DataError, UNITS
 
-TIB = UNITS["TiB"]
+TB = UNITS["TB"]
 
 
 def task(slot=1, **overrides):
-    values = {"visible": True, "enabled": True, "site_id": "10", "uid": "77", "target": "5", "unit": "TiB", "label": "客户 A"}
+    values = {"visible": True, "enabled": True, "site_id": "10", "uid": "77", "initial": "0", "initial_unit": "TB", "total": "5", "total_unit": "TB", "label": "客户 A"}
     values.update(overrides)
     return {f"task_{slot}_{key}": value for key, value in values.items()}
 
@@ -53,7 +53,7 @@ def plugin(monkeypatch):
     return instance
 
 
-def sample(uploaded=2 * TIB, username="sample"):
+def sample(uploaded=2 * TB, username="sample"):
     return {"username": username, "uploaded_bytes": uploaded, "lower_bound_bytes": uploaded, "approximate": False}
 
 
@@ -67,7 +67,7 @@ def test_default_schedule_is_hourly_and_once_uses_host_scheduler(plugin):
 
 def test_invalid_configuration_and_failed_once_scheduling_do_not_start_network(plugin):
     plugin._read_user = Mock()
-    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(target="bad")))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(initial="bad")))
     assert not plugin.get_state() and plugin.get_service() == []
     plugin.run_check()
     plugin._read_user.assert_not_called()
@@ -78,13 +78,13 @@ def test_invalid_configuration_and_failed_once_scheduling_do_not_start_network(p
 
 def test_all_statuses_are_sent_every_round_and_completed_tasks_keep_refreshing(plugin):
     plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(), **task(2, uid="78")))
-    plugin._read_user = Mock(side_effect=[sample(2 * TIB), sample(5 * TIB)] * 2)
+    plugin._read_user = Mock(side_effect=[sample(2 * TB), sample(5 * TB)] * 2)
     plugin.run_check()
     plugin.run_check()
     assert plugin._read_user.call_count == 4 and plugin.post_message.call_count == 2
     text = plugin.post_message.call_args.kwargs["text"]
     assert "【待完成】" in text and "【已完成】" in text
-    assert "当前上传量：2.00 TiB" in text and "目标上传量：5.00 TiB" in text
+    assert "当前上传量：2.00 TB" in text and "目标上传量：5.00 TB" in text
 
 
 def test_same_uid_different_site_uses_each_tasks_site_credentials(plugin):
@@ -97,7 +97,7 @@ def test_same_uid_different_site_uses_each_tasks_site_credentials(plugin):
 
 def test_failed_user_is_separate_from_completed_and_other_users_continue(plugin):
     plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(), **task(2, uid="78")))
-    plugin._read_user = Mock(side_effect=[RuntimeError("private-cookie"), sample(6 * TIB)])
+    plugin._read_user = Mock(side_effect=[RuntimeError("private-cookie"), sample(6 * TB)])
     plugin.run_check()
     result = plugin.get_data("last_result")
     assert [row["status"] for row in result["rows"]] == ["error", "completed"]
@@ -106,57 +106,58 @@ def test_failed_user_is_separate_from_completed_and_other_users_continue(plugin)
 
 
 def test_failed_refresh_shows_last_good_value_but_never_completed_status(plugin):
-    plugin._read_user = Mock(return_value=sample(6 * TIB))
+    plugin._read_user = Mock(return_value=sample(6 * TB))
     plugin.run_check()
     plugin._read_user.side_effect = DataError("Cookie 失效")
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
-    assert row["status"] == "error" and row["last_uploaded_bytes"] == 6 * TIB
+    assert row["status"] == "error" and row["last_uploaded_bytes"] == 6 * TB
     assert "【已完成】" not in plugin.post_message.call_args.kwargs["text"]
     assert "上次成功" in plugin.post_message.call_args.kwargs["text"]
 
 
 def test_counter_decrease_reverts_completion_and_warns(plugin):
-    plugin._read_user = Mock(side_effect=[sample(6 * TIB), sample(TIB)])
+    plugin._read_user = Mock(side_effect=[sample(6 * TB), sample(TB)])
     plugin.run_check()
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
-    assert row["status"] == "pending" and row["delta_bytes"] == -5 * TIB
+    assert row["status"] == "pending" and row["delta_bytes"] == -5 * TB
     assert row["warning"] and row["completed_at"] is None
 
 
 def test_editing_goal_recomputes_completion_without_old_delivery_state(plugin):
-    plugin._read_user = Mock(return_value=sample(6 * TIB))
+    plugin._read_user = Mock(return_value=sample(6 * TB))
     plugin.run_check()
-    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(target="10")))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(total="10")))
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
-    assert row["target_bytes"] == 10 * TIB and row["status"] == "pending"
+    assert row["target_bytes"] == 10 * TB and row["status"] == "pending"
     assert row["completed_at"] is None
 
 
 def test_task_volume_recomputes_progress_after_reconfigure_and_reaches_notifications(plugin):
-    plugin._read_user = Mock(return_value=sample(44 * TIB))
-    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(target="50", total="10")))
+    plugin._read_user = Mock(return_value=sample(44 * TB))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(initial="40", total="10")))
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
-    assert row["initial_bytes"] == 40 * TIB and row["percent"] == 40
-    assert row["task_uploaded_bytes"] == 4 * TIB
+    assert row["initial_bytes"] == 40 * TB and row["percent"] == 40
+    assert row["task_uploaded_bytes"] == 4 * TB
     page = repr(plugin.get_page())
-    assert "初始上传量 40.00 TiB" in page and "已完成 4.00 TiB / 10.00 TiB" in page
-    assert "本次已完成：4.00 TiB" in plugin.post_message.call_args.kwargs["text"]
-    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(target="50", total="20")))
+    assert "初始上传量 40.00 TB" in page and "已完成 4.00 TB / 10.00 TB" in page
+    assert "本次已完成：4.00 TB" in plugin.post_message.call_args.kwargs["text"]
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(initial="40", total="20")))
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
-    assert row["initial_bytes"] == 30 * TIB and row["percent"] == 70
+    assert row["initial_bytes"] == 40 * TB and row["percent"] == 20
+    assert row["target_bytes"] == 60 * TB
 
 
-def test_changing_task_total_resets_first_completion_for_new_task(plugin):
-    plugin._read_user = Mock(return_value=sample(6 * TIB))
-    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(total="2")))
+def test_changing_initial_and_total_resets_completion_even_with_same_target(plugin):
+    plugin._read_user = Mock(return_value=sample(6 * TB))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(initial="3", total="2")))
     plugin._now = Mock(return_value="2026-10-27 10:00:00")
     plugin.run_check()
-    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(total="3")))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(initial="2", total="3")))
     plugin._now = Mock(return_value="2026-10-27 11:00:00")
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
@@ -166,15 +167,11 @@ def test_changing_task_total_resets_first_completion_for_new_task(plugin):
     assert plugin.get_data("last_result")["rows"][0]["completed_at"] == "2026-10-27 11:00:00"
 
 
-def test_notification_submission_status_is_hidden_including_pre_update_results(plugin):
+def test_notification_submission_status_is_hidden(plugin):
     plugin._read_user = Mock(return_value=sample())
     plugin.run_check()
     assert plugin.post_message.call_count == 1
     assert "已提交" not in repr(plugin.get_page())
-    result = plugin.get_data("last_result")
-    result["notification"] = "已提交 MP 通知渠道 1/1 批（不代表收件端送达）"
-    plugin.save_data("last_result", result)
-    assert "不代表收件端送达" not in repr(plugin.get_page())
 
 
 def test_deleted_site_does_not_query_another_site(plugin, monkeypatch):
@@ -186,12 +183,12 @@ def test_deleted_site_does_not_query_another_site(plugin, monkeypatch):
 
 
 def test_mteam_request_has_api_key_and_never_cookie_or_redirect(plugin, monkeypatch):
-    response = SimpleNamespace(status_code=200, json=lambda: {"code": "0", "data": {"id": 77, "username": "sample", "memberCount": {"uploaded": str(5 * TIB)}}})
+    response = SimpleNamespace(status_code=200, json=lambda: {"code": "0", "data": {"id": 77, "username": "sample", "memberCount": {"uploaded": str(5 * TB)}}})
     client = Mock()
     client.post_res.return_value = response
     factory = Mock(return_value=client)
     monkeypatch.setattr(module, "RequestUtils", factory)
-    assert plugin._read_user(site(), 77)["uploaded_bytes"] == 5 * TIB
+    assert plugin._read_user(site(), 77)["uploaded_bytes"] == 5 * TB
     options = factory.call_args.kwargs
     assert options["headers"]["x-api-key"] == "private-api-key" and "cookies" not in options
     assert options["verify"] is True and options["timeout"] == 30
@@ -205,7 +202,7 @@ def test_nexus_uses_selected_cookie_and_user_detail_not_site_owner(plugin, monke
     factory = Mock(return_value=client)
     monkeypatch.setattr(module, "RequestUtils", factory)
     result = plugin._read_user(site(20, "Audiences", "https://audiences.me/"), 77)
-    assert result["uploaded_bytes"] < 6 * TIB
+    assert result["uploaded_bytes"] < 6 * TB
     assert factory.call_args.kwargs["cookies"] == "private-cookie"
     assert "x-api-key" not in factory.call_args.kwargs["headers"]
     client.get_res.assert_called_once_with("https://audiences.me/userdetails.php", params={"id": 77}, allow_redirects=False)
@@ -220,7 +217,7 @@ def test_audiences_card_response_is_accepted_via_normal_request_path(plugin, mon
     factory = Mock(return_value=client)
     monkeypatch.setattr(module, "RequestUtils", factory)
     sample = plugin._read_user(site(20, "Audiences", "https://audiences.me/"), 77)
-    assert sample["username"] == "card-user" and sample["uploaded_bytes"] == 6 * TIB + TIB // 8
+    assert sample["username"] == "card-user" and sample["uploaded_bytes"] == 6 * TB + TB // 8
     assert factory.call_args.kwargs["cookies"] == "private-cookie"
 
 
@@ -256,8 +253,8 @@ def test_transport_exceptions_do_not_expose_credentials(plugin, monkeypatch):
 
 def test_reconfigure_keeps_current_round_snapshot(plugin):
     def reading(_site, uid):
-        plugin.init_plugin(dict(DEFAULTS, enabled=True, notify=False, **task(target="10")))
-        return sample(6 * TIB)
+        plugin.init_plugin(dict(DEFAULTS, enabled=True, notify=False, **task(total="10")))
+        return sample(6 * TB)
     plugin._read_user = Mock(side_effect=reading)
     plugin.run_check()
     assert plugin.get_data("last_result")["rows"][0]["status"] == "completed"

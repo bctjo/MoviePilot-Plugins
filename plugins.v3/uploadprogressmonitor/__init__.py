@@ -31,11 +31,11 @@ def adapter_for(site):
 
 
 class UploadProgressMonitor(_PluginBase):
-    """目标为站点累计上传量，不按启动后的新增流量计算。"""
+    """填写初始上传量及任务总量，按本次任务计算进度。"""
     plugin_name = "上传量进度监控"
-    plugin_desc = "为每位用户绑定站点和累计上传目标，每小时汇总待完成、已完成及查询失败的任务。"
+    plugin_desc = "为每位用户绑定站点、初始上传量和任务总量，每小时汇总待完成、已完成及查询失败的任务。"
     plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.svg"
-    plugin_version = "0.1.3"
+    plugin_version = "0.1.4"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "uploadprogressmonitor_"
@@ -243,15 +243,15 @@ class UploadProgressMonitor(_PluginBase):
                     raise DataError("绑定站点不存在，请在任务配置中重新选择")
                 sample = self._read_user(site, task["uid"])
                 row.update(sample)
-                row.update(progress(sample, task["target_bytes"], task["total_bytes"]))
+                row.update(progress(sample, task["initial_bytes"], task["total_bytes"]))
                 if old.get("uploaded_bytes") is not None and not old.get("approximate") and not sample["approximate"]:
                     row["delta_bytes"] = sample["uploaded_bytes"] - old["uploaded_bytes"]
                     if row["delta_bytes"] < 0:
                         row["warning"] = "累计上传量较上次下降，请核实站点统计"
-                same_goal = (old.get("target_bytes") == task["target_bytes"] and old.get("total_bytes") == task["total_bytes"])
+                same_goal = (old.get("initial_bytes") == task["initial_bytes"] and old.get("total_bytes") == task["total_bytes"])
                 row["completed_at"] = ((old.get("completed_at") if same_goal else None)
                                        or self._now()) if row["status"] == "completed" else None
-                states[task["key"]] = {key: row.get(key) for key in ("username", "uploaded_bytes", "approximate", "target_bytes", "total_bytes", "completed_at")}
+                states[task["key"]] = {key: row.get(key) for key in ("username", "uploaded_bytes", "approximate", "initial_bytes", "total_bytes", "completed_at")}
                 states[task["key"]]["checked_at"] = row["checked_at"]
             except DataError as error:
                 row["status"] = "error"

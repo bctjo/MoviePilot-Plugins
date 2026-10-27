@@ -3,13 +3,13 @@ import pytest
 
 from app.plugins.uploadprogressmonitor import DEFAULTS
 from app.plugins.uploadprogressmonitor.core import (DataError, UNITS, format_bytes, notification_texts,
-    parse_mteam_profile, parse_nexus_profile, parse_tasks, progress, target_bytes)
+    parse_mteam_profile, parse_nexus_profile, parse_tasks, progress, amount_bytes)
 
-TIB = UNITS["TiB"]
+TB = UNITS["TB"]
 
 
 def config_task(slot=1, **overrides):
-    task = {"visible": True, "enabled": True, "site_id": "10", "uid": "77", "target": "5", "unit": "TiB", "label": "客户 A"}
+    task = {"visible": True, "enabled": True, "site_id": "10", "uid": "77", "initial": "0", "initial_unit": "TB", "total": "5", "total_unit": "TB", "label": "客户 A"}
     task.update(overrides)
     return {f"task_{slot}_{key}": value for key, value in task.items()}
 
@@ -45,22 +45,22 @@ def audiences_page(amount="6.125 TB", exact=None):
             '</div></section></div></div></td></tr></table>')
 
 
-@pytest.mark.parametrize("target,expected", [("5", 5 * TIB), ("0.5", TIB // 2), ("0.000000000001", 2)])
+@pytest.mark.parametrize("target,expected", [("5", 5 * TB), ("0.5", TB // 2), ("0.000000000001", 2)])
 def test_target_uses_binary_units_and_rounds_up_to_a_byte(target, expected):
-    assert target_bytes(target, "TiB") == expected
+    assert amount_bytes(target, "TB") == expected
 
 
 def test_target_cannot_round_away_a_positive_fraction_of_a_byte():
-    assert target_bytes("5.000000000000000000000000000001", "TiB") == 5 * TIB + 1
-    assert target_bytes("1e-1000000", "TiB") == 1
+    assert amount_bytes("5.000000000000000000000000000001", "TB") == 5 * TB + 1
+    assert amount_bytes("1e-1000000", "TB") == 1
     with pytest.raises(DataError):
-        target_bytes("1e999999", "TiB")
+        amount_bytes("1e999999", "TB")
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "-1", "0", "abc", None, True])
 def test_invalid_targets_rejected(value):
     with pytest.raises(DataError):
-        target_bytes(value, "TiB")
+        amount_bytes(value, "TB")
 
 
 def test_each_uid_can_bind_independent_sites_and_duplicate_pairs_rejected():
@@ -74,8 +74,8 @@ def test_each_uid_can_bind_independent_sites_and_duplicate_pairs_rejected():
 
 def test_empty_removed_or_paused_slots_ignored():
     assert parse_tasks(DEFAULTS) == []
-    assert parse_tasks(config_task(enabled=False, target="bad")) == []
-    assert parse_tasks(config_task(visible=False, target="bad")) == []
+    assert parse_tasks(config_task(enabled=False, initial="bad")) == []
+    assert parse_tasks(config_task(visible=False, initial="bad")) == []
 
 
 def test_partial_task_requires_uid_site_and_goal():
@@ -83,24 +83,34 @@ def test_partial_task_requires_uid_site_and_goal():
         parse_tasks(config_task(site_id=""))
 
 
-def test_task_total_infers_initial_upload_and_supports_independent_units():
-    task = parse_tasks(config_task(target="5", total="2048", total_unit="GiB"))[0]
-    assert task["target_bytes"] == 5 * TIB
-    assert task["total_bytes"] == 2 * TIB and task["initial_bytes"] == 3 * TIB
-    task = parse_tasks(config_task(total="5"))[0]
+def test_initial_upload_and_task_total_add_to_target_with_independent_units():
+    task = parse_tasks(config_task(initial="3", total="2048", total_unit="GB"))[0]
+    assert task["target_bytes"] == 5 * TB
+    assert task["total_bytes"] == 2 * TB and task["initial_bytes"] == 3 * TB
+    task = parse_tasks(config_task(initial=0, total="5"))[0]
     assert task["initial_bytes"] == 0
+    task = parse_tasks(config_task(initial="1", total="6"))[0]
+    assert task["target_bytes"] == 7 * TB
 
 
-@pytest.mark.parametrize("total", [None, "", "  "])
-def test_optional_task_total_preserves_existing_cumulative_mode(total):
-    task = parse_tasks(config_task(total=total))[0]
-    assert task["total_bytes"] is None and task["initial_bytes"] is None
+@pytest.mark.parametrize("initial", [None, "", "  ", "-1", "NaN", "Infinity", "abc", True])
+def test_initial_upload_is_required_and_nonnegative(initial):
+    with pytest.raises(DataError, match="任务 1：初始上传量"):
+        parse_tasks(config_task(initial=initial))
 
 
-@pytest.mark.parametrize("total", ["0", "-1", "NaN", "Infinity", "abc", True, "6"])
-def test_task_total_must_be_positive_and_no_larger_than_cumulative_goal(total):
+@pytest.mark.parametrize("total", [None, "", "  ", "0", "-1", "NaN", "Infinity", "abc", True])
+def test_task_total_is_required_and_positive(total):
     with pytest.raises(DataError, match="任务 1：任务总量"):
         parse_tasks(config_task(total=total))
+
+
+def test_combined_target_cannot_overflow_and_units_are_gb_tb_pb():
+    with pytest.raises(DataError, match="相加超过"):
+        parse_tasks(config_task(initial="16777215", total="1"))
+    with pytest.raises(DataError, match="有效单位"):
+        parse_tasks(config_task(initial_unit="TiB"))
+    assert parse_tasks(config_task(initial="1024", initial_unit="GB", total="1", total_unit="PB"))[0]["target_bytes"] == TB + 1024 * TB
 
 
 def test_task_total_alone_is_incomplete_instead_of_silently_skipped():
@@ -124,28 +134,28 @@ def test_mteam_missing_or_invalid_counter_is_not_zero(value):
 
 def test_mteam_cannot_substitute_a_different_user():
     with pytest.raises(DataError):
-        parse_mteam_profile({"id": 78, "memberCount": {"uploaded": 9 * TIB}}, 77)
+        parse_mteam_profile({"id": 78, "memberCount": {"uploaded": 9 * TB}}, 77)
 
 
 def test_nexus_reads_target_not_navbar_or_real_upload():
-    parsed = parse_nexus_profile(nexus_page(exact=5 * TIB), 77)
+    parsed = parse_nexus_profile(nexus_page(exact=5 * TB), 77)
     assert parsed["username"] == "sample-user"
-    assert parsed["uploaded_bytes"] == 5 * TIB and not parsed["approximate"]
-    assert progress(parsed, 5 * TIB)["status"] == "completed"
+    assert parsed["uploaded_bytes"] == 5 * TB and not parsed["approximate"]
+    assert progress(parsed, 0, 5 * TB)["status"] == "completed"
 
 
 @pytest.mark.parametrize("traditional", [False, True])
 def test_formatted_nexus_boundary_is_pending_until_precision_confirms(traditional):
     sample = parse_nexus_profile(nexus_page(traditional=traditional), 77)
     assert sample["approximate"]
-    state = progress(sample, 5 * TIB)
+    state = progress(sample, 0, 5 * TB)
     assert state["status"] == "pending" and state["precision_note"]
-    assert progress(parse_nexus_profile(nexus_page("5.01 TiB", traditional=traditional), 77), 5 * TIB)["status"] == "completed"
+    assert progress(parse_nexus_profile(nexus_page("5.01 TB", traditional=traditional), 77), 0, 5 * TB)["status"] == "completed"
 
 
 def test_nexus_separate_cells_and_english_labels():
-    source = '<h1>sample</h1><table><tr><td>Uploaded</td><td>2,048 GiB</td></tr></table>'
-    assert parse_nexus_profile(source, 77)["uploaded_bytes"] == 2 * TIB
+    source = '<h1>sample</h1><table><tr><td>Uploaded</td><td>2,048 GB</td></tr></table>'
+    assert parse_nexus_profile(source, 77)["uploaded_bytes"] == 2 * TB
 
 
 @pytest.mark.parametrize("source", [
@@ -172,23 +182,23 @@ def test_nexus_ambiguous_banner_and_login_page_cannot_supply_user_upload():
         parse_nexus_profile('<h1>站点</h1><table><tr><td>上传量</td><td>99 TB</td></tr></table><h1>私密资料</h1>', 77)
     with pytest.raises(DataError, match="登录页"):
         parse_nexus_profile(nexus_page() + '<form action="takelogin.php"></form>', 77)
-    assert parse_nexus_profile('<h1>站点</h1>' + nexus_page(exact=5 * TIB), 77)["uploaded_bytes"] == 5 * TIB
+    assert parse_nexus_profile('<h1>站点</h1>' + nexus_page(exact=5 * TB), 77)["uploaded_bytes"] == 5 * TB
 
 
 def test_audiences_card_reads_upload_row_and_name_without_h1():
     source = audiences_page() + '<table><tr><td>上传量</td><td>100 TB</td></tr></table>'
     sample = parse_nexus_profile(source, 77)
     assert sample["username"] == "card-user"
-    assert sample["uploaded_bytes"] == 6 * TIB + TIB // 8
-    assert sample["approximate"] and progress(sample, 5 * TIB)["status"] == "completed"
+    assert sample["uploaded_bytes"] == 6 * TB + TB // 8
+    assert sample["approximate"] and progress(sample, 0, 5 * TB)["status"] == "completed"
 
 
 def test_audiences_card_preserves_rounding_and_exact_byte_behavior():
     sample = parse_nexus_profile(audiences_page("5.000 TB"), 77)
-    assert progress(sample, 5 * TIB)["status"] == "pending"
-    sample = parse_nexus_profile(audiences_page("5.000 TB", exact=5 * TIB), 77)
-    assert sample["uploaded_bytes"] == 5 * TIB and not sample["approximate"]
-    assert progress(sample, 5 * TIB)["status"] == "completed"
+    assert progress(sample, 0, 5 * TB)["status"] == "pending"
+    sample = parse_nexus_profile(audiences_page("5.000 TB", exact=5 * TB), 77)
+    assert sample["uploaded_bytes"] == 5 * TB and not sample["approximate"]
+    assert progress(sample, 0, 5 * TB)["status"] == "completed"
 
 
 @pytest.mark.parametrize("old,new", [
@@ -226,10 +236,10 @@ def test_nexus_login_form_without_heading_reports_login_failure():
 
 
 def test_threshold_uses_current_total_not_growth_since_start():
-    sample = {"uploaded_bytes": 5 * TIB, "lower_bound_bytes": 5 * TIB, "approximate": False}
-    assert progress(sample, 5 * TIB)["status"] == "completed"
-    assert progress(sample, 6 * TIB)["status"] == "pending"
-    assert format_bytes(5 * TIB) == "5.00 TiB"
+    sample = {"uploaded_bytes": 5 * TB, "lower_bound_bytes": 5 * TB, "approximate": False}
+    assert progress(sample, 2 * TB, 3 * TB)["status"] == "completed"
+    assert progress(sample, 2 * TB, 4 * TB)["status"] == "pending"
+    assert format_bytes(5 * TB) == "5.00 TB"
 
 
 @pytest.mark.parametrize("current,percent,done,status", [
@@ -237,38 +247,38 @@ def test_threshold_uses_current_total_not_growth_since_start():
     (50, 100, 10, "completed"), (55, 100, 10, "completed"),
 ])
 def test_progress_uses_task_total_instead_of_account_lifetime_total(current, percent, done, status):
-    sample = {"uploaded_bytes": current * TIB, "lower_bound_bytes": current * TIB, "approximate": False}
-    result = progress(sample, 50 * TIB, 10 * TIB)
+    sample = {"uploaded_bytes": current * TB, "lower_bound_bytes": current * TB, "approximate": False}
+    result = progress(sample, 40 * TB, 10 * TB)
     assert result["percent"] == percent and result["status"] == status
-    assert result["task_uploaded_bytes"] == done * TIB
-    assert result["remaining_bytes"] == max(0, (50 - current) * TIB)
-    assert progress(sample, 50 * TIB)["percent"] == min(100, current * 2)
+    assert result["task_uploaded_bytes"] == done * TB
+    assert result["remaining_bytes"] == max(0, (50 - current) * TB)
 
 
 def test_rounded_boundary_does_not_show_a_full_task_bar_before_confirmed():
     sample = parse_nexus_profile(audiences_page("5.000 TB"), 77)
-    result = progress(sample, 5 * TIB, 2 * TIB)
+    result = progress(sample, 3 * TB, 2 * TB)
     assert result["status"] == "pending" and result["percent"] == 99.9
-    assert result["precision_note"] and result["task_uploaded_bytes"] < 2 * TIB
+    assert result["precision_note"] and result["task_uploaded_bytes"] < 2 * TB
 
 
 def test_task_notification_shows_initial_total_and_completed_volume():
-    sample = {"uploaded_bytes": 44 * TIB, "lower_bound_bytes": 44 * TIB, "approximate": False}
-    row = dict(parse_tasks(config_task(target="50", total="10"))[0], **sample, **progress(sample, 50 * TIB, 10 * TIB),
+    sample = {"uploaded_bytes": 44 * TB, "lower_bound_bytes": 44 * TB, "approximate": False}
+    row = dict(parse_tasks(config_task(initial="40", total="10"))[0], **sample, **progress(sample, 40 * TB, 10 * TB),
                site_name="站点")
     message = notification_texts({"rows": [row], "updated_at": "2026-10-27 10:00:00"})[0]
-    assert "目标上传量：50.00 TiB" in message
-    assert "任务总量：10.00 TiB · 初始：40.00 TiB" in message
-    assert "本次已完成：4.00 TiB" in message and "进度：40.0%" in message
+    assert "目标上传量：50.00 TB" in message
+    assert "任务总量：10.00 TB · 初始：40.00 TB" in message
+    assert "本次已完成：4.00 TB" in message and "进度：40.0%" in message
 
 
 def test_grouped_notifications_keep_every_task_across_batches():
     rows = []
     for uid in range(1, 101):
-        row = {"uid": uid, "site_name": "站点", "label": f"客户-{uid:03}", "target_bytes": 5 * TIB,
+        row = {"uid": uid, "site_name": "站点", "label": f"客户-{uid:03}", "target_bytes": 5 * TB,
+               "initial_bytes": 0, "total_bytes": 5 * TB, "task_uploaded_bytes": 2 * TB,
                "status": "error" if uid % 3 == 0 else "completed" if uid % 3 == 1 else "pending",
-               "error": "Cookie 失效", "uploaded_bytes": 2 * TIB, "approximate": False,
-               "percent": 40, "remaining_bytes": 3 * TIB}
+               "error": "Cookie 失效", "uploaded_bytes": 2 * TB, "approximate": False,
+               "percent": 40, "remaining_bytes": 3 * TB}
         rows.append(row)
     pages = notification_texts({"rows": rows, "updated_at": "2026-10-27 10:00:00"}, limit=1000)
     assert len(pages) > 1

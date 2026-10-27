@@ -1,11 +1,13 @@
 """复用宿主 Vuetify JSON 表单，无独立前端依赖或额外 API。"""
-from .core import MAX_TASKS, format_bytes
+from .core import MAX_TASKS, TASK_UNITS, format_bytes
 
 
 def node(component, text=None, props=None, content=None):
     result = {"component": component}
     if text is not None:
         result["text"] = str(text)
+    if component in {"VTextField", "VSelect"}:
+        props = {"density": "compact", "hide-details": "auto", **(props or {})}
     if props:
         result["props"] = props
     if content is not None:
@@ -13,33 +15,28 @@ def node(component, text=None, props=None, content=None):
     return result
 
 
-def col(component, width=6):
-    return node("VCol", props={"cols": 12, "md": width}, content=[component])
+def col(component, width=6, small=12):
+    return node("VCol", props={"cols": small, "md": width}, content=[component])
 
 
 def config_form(sites, error=None):
     """所有任务单独绑定站点；增删事件只改变当前表单模型。"""
     switches = [col(node("VSwitch", props={"model": key, "label": title, "color": "primary", "hide-details": True}), 4)
-                for key, title in (("enabled", "启用插件"), ("notify", "每轮推送进度汇总"), ("onlyonce", "保存后立即检查一次"))]
+                for key, title in (("enabled", "启用插件"), ("notify", "每轮发送通知"), ("onlyonce", "立即检查一次"))]
     panels = []
     for index in range(1, MAX_TASKS + 1):
         prefix = f"task_{index}_"
         fields = [
-            col(node("VTextField", props={"model": prefix + "label", "label": "客户备注（可选）", "maxlength": 80}), 6),
-            col(node("VTextField", props={"model": prefix + "uid", "label": "用户 UID", "inputmode": "numeric", "placeholder": "填写该站点的 UID"}), 6),
-            col(node("VSelect", props={"model": prefix + "site_id", "label": "该用户绑定的站点", "items": sites, "clearable": True}), 6),
-            col(node("VTextField", props={"model": prefix + "target", "label": "目标累计上传量", "type": "number", "min": 0, "step": "any"}), 3),
-            col(node("VSelect", props={"model": prefix + "unit", "label": "目标单位", "items": [
-                {"title": "GiB（站点 GB）", "value": "GiB"}, {"title": "TiB（站点 TB）", "value": "TiB"},
-                {"title": "PiB（站点 PB）", "value": "PiB"}]}), 3),
-            col(node("VTextField", props={"model": prefix + "total", "label": "任务总量（可选）", "type": "number", "min": 0, "step": "any",
-                "hint": "初始上传量 = 目标累计上传量 − 任务总量；留空沿用累计进度", "persistent-hint": True}), 9),
-            col(node("VSelect", props={"model": prefix + "total_unit", "label": "任务总量单位", "items": [
-                {"title": "GiB（站点 GB）", "value": "GiB"}, {"title": "TiB（站点 TB）", "value": "TiB"},
-                {"title": "PiB（站点 PB）", "value": "PiB"}]}), 3),
+            col(node("VTextField", props={"model": prefix + "label", "label": "客户备注", "placeholder": "可选", "maxlength": 80}), 4),
+            col(node("VTextField", props={"model": prefix + "uid", "label": "UID", "required": True, "inputmode": "numeric"}), 4),
+            col(node("VSelect", props={"model": prefix + "site_id", "label": "绑定站点", "required": True, "items": sites, "clearable": True}), 4),
+            col(node("VTextField", props={"model": prefix + "initial", "label": "初始上传量", "required": True, "type": "number", "min": 0, "step": "any"}), 4, 8),
+            col(node("VSelect", props={"model": prefix + "initial_unit", "label": "单位", "items": list(TASK_UNITS)}), 2, 4),
+            col(node("VTextField", props={"model": prefix + "total", "label": "任务总量", "required": True, "type": "number", "min": 0, "step": "any"}), 4, 8),
+            col(node("VSelect", props={"model": prefix + "total_unit", "label": "单位", "items": list(TASK_UNITS)}), 2, 4),
             col(node("VSwitch", props={"model": prefix + "enabled", "label": "监控此任务", "color": "primary", "hide-details": True}), 6),
             col(node("VBtn", "移除此任务", {"color": "error", "variant": "text", "onClick":
-                f"() => {{ model.{prefix}visible = false; model.{prefix}uid = ''; model.{prefix}site_id = ''; model.{prefix}target = ''; model.{prefix}total = ''; model.{prefix}label = ''; model.{prefix}unit = 'TiB'; model.{prefix}total_unit = 'TiB'; model.{prefix}enabled = true; }}"}), 6),
+                f"() => {{ model.{prefix}visible = false; model.{prefix}uid = ''; model.{prefix}site_id = ''; model.{prefix}initial = ''; model.{prefix}total = ''; model.{prefix}label = ''; model.{prefix}initial_unit = 'TB'; model.{prefix}total_unit = 'TB'; model.{prefix}enabled = true; }}"}), 6),
         ]
         title = node("VExpansionPanelTitle", content=[node("div", props={"class": "d-flex align-center ga-3"}, content=[
             node("span", f"任务 {index}"), node("VChip", props={"size": "small", "variant": "tonal", "color": "primary"},
@@ -51,13 +48,12 @@ def config_form(sites, error=None):
     content = [
         node("VRow", content=switches),
         node("VRow", content=[col(node("VCronField", props={"model": "cron", "label": "检查周期（北京时间）",
-             "hint": "默认每小时整点检查并汇总；0 * * * *", "persistent-hint": True}), 12)]),
-        node("VAlert", props={"type": "info", "variant": "tonal", "class": "my-4",
-             "text": "目标按站点累计上传量计算，单位按 1024 换算。馒头复用 MP 站点的 API Key；Audiences 及同模板 NexusPHP 站点复用 Cookie。完成任务也继续参与每轮汇总。"}),
+             "hint": "默认每小时整点", "persistent-hint": True}), 12)]),
+        node("div", "目标上传量 = 初始上传量 + 任务总量", {"class": "text-caption text-medium-emphasis my-3"}),
         node("VExpansionPanels", props={"model": "open_panels", "multiple": True, "variant": "accordion", "class": "mb-4"}, content=panels),
         node("VBtn", "添加监控任务", {"color": "primary", "variant": "tonal", "onClick": add_task,
              "disabled": "{{ Array.from({length: " + str(MAX_TASKS) + "}, (_, i) => model['task_' + (i + 1) + '_visible']).every(Boolean) }}"}),
-        node("div", f"最多 {MAX_TASKS} 项；编辑完成后保存生效。留空的任务不参与检查，暂停任务可关闭“监控此任务”。",
+        node("div", f"最多 {MAX_TASKS} 项，保存后生效。",
              {"class": "text-caption text-medium-emphasis mt-3"}),
     ]
     if not sites:
@@ -88,7 +84,8 @@ def details_page(result, error=None):
         details.extend([node("VProgressLinear", props={"color": "primary", "height": 6, "rounded": True, "class": "mb-3",
                         "model-value": len(rows) * 100 / result["total"] if result.get("total") else 0}),
                         node("div", result.get("stage", "正在检查"), {"class": "text-body-2 mb-3"})])
-    details.append(node("div", f"最近更新：{result.get('updated_at', '—')}（北京时间） · 已检查 {len(rows)}/{result.get('total', 0)} 项",
+    checked = f" · 已检查 {len(rows)}/{result.get('total', 0)} 项" if result.get("status") == "running" else ""
+    details.append(node("div", f"最近检查：{result.get('updated_at', '—')}{checked}",
                         {"class": "text-caption text-medium-emphasis pt-3 border-t"}))
     content = [node("VCard", props={"variant": "outlined", "rounded": "lg", "class": "mb-4"},
                     content=[node("VCardText", props={"class": "pa-4 pa-sm-5"}, content=details)])]
@@ -96,7 +93,7 @@ def details_page(result, error=None):
         content.append(node("VAlert", props={"type": "warning", "variant": "tonal", "class": "mb-4", "text": error or result["error"]}))
     elif not result:
         content.append(node("VAlert", props={"type": "info", "variant": "tonal", "class": "mb-4",
-                                            "text": "在配置页添加用户、绑定站点并填写目标上传量；保存后可立即检查。"}))
+                                            "text": "在配置页添加用户、绑定站点并填写初始上传量和任务总量；保存后可立即检查。"}))
     for key, title, section_color in (("pending", "待完成", "warning"), ("completed", "已完成", "success"), ("error", "查询失败", "error")):
         matching = [row for row in rows if row["status"] == key]
         if not matching:
@@ -115,21 +112,17 @@ def details_page(result, error=None):
                 current = [node("div", format_bytes(row["uploaded_bytes"]))]
                 progress_cell = [node("div", f"{row['percent']}%", {"class": "text-body-2 mb-1"}),
                                  node("VProgressLinear", props={"model-value": row["percent"], "height": 5, "rounded": True, "color": section_color}),
-                                 node("div", f"剩余 {format_bytes(row['remaining_bytes'])}" if key == "pending" else f"首次发现达标：{row.get('completed_at') or '—'}",
+                                 node("div", f"剩余 {format_bytes(row['remaining_bytes'])}" if key == "pending" else f"发现达标：{row.get('completed_at') or '—'}",
                                       {"class": "text-caption text-medium-emphasis mt-1"})]
-                if row.get("total_bytes") is not None:
-                    progress_cell.append(node("div", f"已完成 {format_bytes(row['task_uploaded_bytes'])} / {format_bytes(row['total_bytes'])}",
-                                              {"class": "text-caption text-medium-emphasis mt-1"}))
-                else:
-                    progress_cell.append(node("div", "按累计上传量计算", {"class": "text-caption text-medium-emphasis mt-1"}))
+                progress_cell.append(node("div", f"已完成 {format_bytes(row['task_uploaded_bytes'])} / {format_bytes(row['total_bytes'])}",
+                                          {"class": "text-caption text-medium-emphasis mt-1"}))
                 for note in (row.get("precision_note"), row.get("warning")):
                     if note:
                         current.append(node("div", note, {"class": "text-caption text-warning"}))
             delta = row.get("delta_bytes")
             target = [node("div", format_bytes(row["target_bytes"]))]
-            if row.get("total_bytes") is not None:
-                target.extend([node("div", f"任务总量 {format_bytes(row['total_bytes'])}", {"class": "text-caption text-medium-emphasis"}),
-                               node("div", f"初始上传量 {format_bytes(row['initial_bytes'])}", {"class": "text-caption text-medium-emphasis"})])
+            target.extend([node("div", f"任务总量 {format_bytes(row['total_bytes'])}", {"class": "text-caption text-medium-emphasis"}),
+                           node("div", f"初始上传量 {format_bytes(row['initial_bytes'])}", {"class": "text-caption text-medium-emphasis"})])
             cells = [node("td", props={"class": "py-3"}, content=account), node("td", row["site_name"]),
                      node("td", content=current), node("td", content=target),
                      node("td", props={"style": "min-width: 180px"}, content=progress_cell),
