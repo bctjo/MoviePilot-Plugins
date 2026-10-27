@@ -16,5 +16,18 @@
       "v0.1.1": "真实 API 联调：使用邀请历史接口，支持 uid 字段；验证直接下级资料读取。",
       "v0.1.0": "开发预览：直接下级检查、30天阈值、封存例外、MP渠道通知、去重记录；真实接口及宿主联调待完成。"
     }
+  },
+  "UploadProgressMonitor": {
+    "name": "上传量进度监控",
+    "description": "为每位用户绑定站点和累计上传目标，每小时汇总待完成、已完成及查询失败的任务。",
+    "labels": "站点,上传量,进度",
+    "version": "0.1.0",
+    "icon": "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.svg",
+    "author": "bctjo",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v0.1.0": "首个预览版：独立配置用户、站点和累计上传目标；馒头 API、Audiences 与通用 NexusPHP 模板；每小时分类汇总，支持多任务、增量、异常隔离及进度详情。"
+    }
   }
 }

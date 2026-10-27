@@ -1,6 +1,6 @@
 # 开发与测试
 
-插件代码位于 `plugins.v3/mteaminvitereminder/`，测试位于 `tests/v3/mteaminvitereminder/`。市场只读取 `main` 分支及 `package.v3.json`。当前按源码方式发布，无需 GitHub Release 资产。
+插件代码位于 `plugins.v3/<插件 ID 小写>/`，对应测试位于 `tests/v3/<插件 ID 小写>/`。目前维护 `mteaminvitereminder` 和 `uploadprogressmonitor`。市场只读取 `main` 分支及 `package.v3.json`。当前按源码方式发布，无需 GitHub Release 资产。
 
 ## 离线测试
 
@@ -13,6 +13,8 @@ python -m compileall -q plugins.v3
 ```
 
 `tests/offline_host.py` 仅为最小宿主替身，不属于插件运行时。离线测试用于规则、生命周期、请求和通知边界；不能替代真实 MP 加载或渠道送达测试。CI 运行同样的离线检查，不访问馒头或真实 MP，也不需要用户凭据。
+
+`scripts/test_offline.py` 自动发现拥有对应测试目录的插件，每个插件在独立 pytest 进程中加载。上传量监控只使用标准库解析 HTML；无需为离线测试额外安装 HTML 解析包。其配置页使用宿主 JSON 表单的模型和事件能力，无独立前端构建。
 
 ## 真实宿主测试
 
