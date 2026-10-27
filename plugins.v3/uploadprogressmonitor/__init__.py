@@ -35,7 +35,7 @@ class UploadProgressMonitor(_PluginBase):
     plugin_name = "上传量进度监控"
     plugin_desc = "为每位用户绑定站点和累计上传目标，每小时汇总待完成、已完成及查询失败的任务。"
     plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.svg"
-    plugin_version = "0.1.0"
+    plugin_version = "0.1.1"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "uploadprogressmonitor_"

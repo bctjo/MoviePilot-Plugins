@@ -24,6 +24,27 @@ def nexus_page(amount="5.00 TB", exact=None, traditional=False):
             '<tr><td><strong>真实上传量</strong>: 80.00 TB</td></tr></table></td></tr></table></body></html>')
 
 
+def audiences_page(amount="6.125 TB", exact=None):
+    """按观众卡片布局重建的合成页面，不复制原始用户资料。"""
+    title = f' title="{exact} bytes"' if exact is not None else ""
+    return ('<div id="nav"><a href="userdetails.php?id=77">登录账号</a>上传量 99 TB</div>'
+            '<table><tr><td class="embedded"><div class="ud-page">'
+            '<div class="ud-hero"><div class="ud-hero__main"><div class="ud-hero__name">'
+            '<span class="nowrap"><a href="userdetails.php?id=77"><b>card-user</b></a></span>'
+            '<span class="ud-flag"><img alt="国旗"></span></div></div></div>'
+            '<div class="ud-stats"><div class="ud-stat"><div class="ud-stat__body">'
+            '<div class="ud-stat__value">90.000 TB</div><div class="ud-stat__label">上传</div></div></div></div>'
+            '<div class="ud-grid"><section class="ud-card"><h2 class="ud-card__title">账号信息</h2>'
+            '<div class="ud-card__body"><div class="ud-row"><div class="ud-row__label">UID</div>'
+            '<div class="ud-row__value">77</div></div><div class="ud-row"><div class="ud-row__label">邀请人</div>'
+            '<div class="ud-row__value"><a href="userdetails.php?id=88">inviter</a></div></div></div></section>'
+            '<section class="ud-card"><h2 class="ud-card__title">传输与时间</h2><div class="ud-card__body">'
+            '<div class="ud-row"><div class="ud-row__label"><i class="fas fa-arrow-up"></i><span>上传量</span></div>'
+            f'<div class="ud-row__value"{title}>{amount}</div></div>'
+            '<div class="ud-row"><div class="ud-row__label">真实上传量</div><div class="ud-row__value">80 TB</div></div>'
+            '</div></section></div></div></td></tr></table>')
+
+
 @pytest.mark.parametrize("target,expected", [("5", 5 * TIB), ("0.5", TIB // 2), ("0.000000000001", 2)])
 def test_target_uses_binary_units_and_rounds_up_to_a_byte(target, expected):
     assert target_bytes(target, "TiB") == expected
@@ -127,6 +148,56 @@ def test_nexus_ambiguous_banner_and_login_page_cannot_supply_user_upload():
     with pytest.raises(DataError, match="登录页"):
         parse_nexus_profile(nexus_page() + '<form action="takelogin.php"></form>', 77)
     assert parse_nexus_profile('<h1>站点</h1>' + nexus_page(exact=5 * TIB), 77)["uploaded_bytes"] == 5 * TIB
+
+
+def test_audiences_card_reads_upload_row_and_name_without_h1():
+    source = audiences_page() + '<table><tr><td>上传量</td><td>100 TB</td></tr></table>'
+    sample = parse_nexus_profile(source, 77)
+    assert sample["username"] == "card-user"
+    assert sample["uploaded_bytes"] == 6 * TIB + TIB // 8
+    assert sample["approximate"] and progress(sample, 5 * TIB)["status"] == "completed"
+
+
+def test_audiences_card_preserves_rounding_and_exact_byte_behavior():
+    sample = parse_nexus_profile(audiences_page("5.000 TB"), 77)
+    assert progress(sample, 5 * TIB)["status"] == "pending"
+    sample = parse_nexus_profile(audiences_page("5.000 TB", exact=5 * TIB), 77)
+    assert sample["uploaded_bytes"] == 5 * TIB and not sample["approximate"]
+    assert progress(sample, 5 * TIB)["status"] == "completed"
+
+
+@pytest.mark.parametrize("old,new", [
+    ('<a href="userdetails.php?id=77"><b>', '<a href="userdetails.php?id=78"><b>'),
+    ('<a href="userdetails.php?id=77"><b>', '<a href="userdetails.php?id=77&amp;id=78"><b>'),
+    ('<div class="ud-row__value">77</div>', '<div class="ud-row__value">78</div>'),
+    ('<div class="ud-row__label">UID</div>', '<div class="ud-row__label">隐藏</div>'),
+])
+def test_audiences_card_checks_both_profile_link_and_uid_row(old, new):
+    with pytest.raises(DataError, match="UID"):
+        parse_nexus_profile(audiences_page().replace(old, new), 77)
+
+
+@pytest.mark.parametrize("source", [
+    audiences_page("资料隐藏"),
+    audiences_page().replace('<span>上传量</span>', '<span>真实上传量</span>'),
+])
+def test_audiences_private_or_missing_upload_cannot_use_navbar_or_summary(source):
+    with pytest.raises(DataError, match="未找到目标用户上传量"):
+        parse_nexus_profile(source, 77)
+
+
+def test_audiences_multiple_cards_and_conflicting_upload_rows_rejected():
+    with pytest.raises(DataError, match="唯一定位"):
+        parse_nexus_profile(audiences_page() * 2, 77)
+    source = audiences_page().replace('<div class="ud-row__label">真实上传量</div>',
+                                     '<div class="ud-row__label">上传量</div>')
+    with pytest.raises(DataError, match="多个不同"):
+        parse_nexus_profile(source, 77)
+
+
+def test_nexus_login_form_without_heading_reports_login_failure():
+    with pytest.raises(DataError, match="登录页"):
+        parse_nexus_profile('<form action="takelogin.php"><input name="username"></form>', 77)
 
 
 def test_threshold_uses_current_total_not_growth_since_start():

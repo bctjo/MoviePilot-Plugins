@@ -169,6 +169,19 @@ def test_nexus_uses_selected_cookie_and_user_detail_not_site_owner(plugin, monke
     client.get_res.assert_called_once_with("https://audiences.me/userdetails.php", params={"id": 77}, allow_redirects=False)
 
 
+def test_audiences_card_response_is_accepted_via_normal_request_path(plugin, monkeypatch):
+    body = ('<div class="ud-page"><div class="ud-hero__name"><a href="userdetails.php?id=77">card-user</a></div>'
+            '<div class="ud-row"><div class="ud-row__label">UID</div><div class="ud-row__value">77</div></div>'
+            '<div class="ud-row"><div class="ud-row__label">上传量</div><div class="ud-row__value">6.125 TB</div></div></div>')
+    client = Mock()
+    client.get_res.return_value = SimpleNamespace(status_code=200, content=body.encode())
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(module, "RequestUtils", factory)
+    sample = plugin._read_user(site(20, "Audiences", "https://audiences.me/"), 77)
+    assert sample["username"] == "card-user" and sample["uploaded_bytes"] == 6 * TIB + TIB // 8
+    assert factory.call_args.kwargs["cookies"] == "private-cookie"
+
+
 def test_nexus_old_chinese_encoding_and_missing_cookie_are_handled(plugin, monkeypatch):
     body = '<meta charset="gb18030"><h1>示例</h1><table><tr><td>上传量</td><td>5.01 TB</td></tr></table>'
     assert "上传量" in plugin._html(SimpleNamespace(content=body.encode("gb18030")))

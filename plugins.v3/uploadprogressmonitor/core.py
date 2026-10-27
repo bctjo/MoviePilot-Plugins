@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("Asia/Shanghai")
 MAX_TASKS = 100
 UNITS = {name: 1024 ** power for power, name in enumerate(("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"))}
+UPLOAD_LABELS = {"上传", "上传量", "已上传", "上傳", "上傳量", "已上傳", "uploaded", "upload"}
 
 
 class DataError(ValueError):
@@ -197,17 +198,66 @@ def cell_sample(cell, value):
     return {"uploaded_bytes": uploaded, "lower_bound_bytes": lower, "approximate": approximate}
 
 
+def _unique_nexus_sample(samples):
+    if not samples:
+        raise DataError("未找到目标用户上传量，可能为隐私限制、Cookie 失效或页面改版")
+    if len({(item["uploaded_bytes"], item["lower_bound_bytes"]) for item in samples}) != 1:
+        raise DataError("页面包含多个不同的上传量，无法可靠判断")
+    return samples[0]
+
+
+def _has_class(node, name):
+    return name in node.attrs.get("class", "").split()
+
+
+def _parse_nexus_card(pages, uid):
+    """观众卡片布局：限定资料容器，并同时核对姓名链接与 UID 字段。"""
+    if len(pages) != 1:
+        raise DataError("无法唯一定位目标用户资料卡片")
+    nodes = list(descendants(pages[0]))
+    names = [node for node in nodes if _has_class(node, "ud-hero__name")]
+    if len(names) != 1:
+        raise DataError("无法唯一定位用户资料卡片姓名")
+    links = [node for node in descendants(names[0]) if node.tag == "a"
+             and urlparse(node.attrs.get("href", "")).path.rsplit("/", 1)[-1] == "userdetails.php"]
+    if len(links) != 1 or parse_qs(urlparse(links[0].attrs["href"]).query).get("id") != [str(uid)]:
+        raise DataError("页面资料 UID 与监控任务不一致或缺失")
+    fields = []
+    for row in nodes:
+        if not _has_class(row, "ud-row"):
+            continue
+        children = [child for child in row.children if isinstance(child, Node)]
+        labels = [child for child in children if _has_class(child, "ud-row__label")]
+        values = [child for child in children if _has_class(child, "ud-row__value")]
+        if len(labels) == len(values) == 1:
+            fields.append((normalized(text(labels[0])), values[0]))
+    identities = [text(value).strip() for name, value in fields if name == "uid"]
+    if identities != [str(uid)]:
+        raise DataError("资料卡片 UID 字段与监控任务不一致或缺失")
+    samples = []
+    for name, value in fields:
+        if name in UPLOAD_LABELS:
+            try:
+                samples.append(cell_sample(value, text(value).strip()))
+            except DataError:
+                continue
+    return dict(_unique_nexus_sample(samples), username=label(text(links[0])) or str(uid))
+
+
 def parse_nexus_profile(source, uid):
     """解析 NexusPHP 资料页，排除导航栏和真实上传等不同记账指标。"""
     if not isinstance(source, str) or len(source) > 5_000_000:
         raise DataError("用户详情页为空或超过解析大小限制")
     document = Document(source)
-    headings = [node for node in document.nodes if node.tag == "h1"]
-    if not headings:
-        raise DataError("未找到用户资料标题，请检查 Cookie、登录状态或页面布局")
     if any(node.tag == "form" and urlparse(node.attrs.get("action", "")).path.rsplit("/", 1)[-1] in {"login.php", "takelogin.php"}
            for node in document.nodes):
         raise DataError("站点返回登录页，请更新 MP 站点 Cookie")
+    cards = [node for node in document.nodes if _has_class(node, "ud-page")]
+    if cards:
+        return _parse_nexus_card(cards, uid)
+    headings = [node for node in document.nodes if node.tag == "h1"]
+    if not headings:
+        raise DataError("未找到用户资料标题，请检查 Cookie、登录状态或页面布局")
     matching = [heading for heading in headings if any(
         node.tag == "a" and "userdetails.php" in node.attrs.get("href", "")
         and str(uid) in parse_qs(urlparse(node.attrs["href"]).query).get("id", []) for node in descendants(heading))]
@@ -222,13 +272,12 @@ def parse_nexus_profile(source, uid):
             ids = parse_qs(urlparse(node.attrs["href"]).query).get("id", [])
             if ids and str(uid) not in ids:
                 raise DataError("页面资料 UID 与监控任务不一致")
-    labels = {"上传", "上传量", "已上传", "上傳", "上傳量", "已上傳", "uploaded", "upload"}
     samples, used = [], set()
     for node in document.nodes:
         if node.position <= heading.position or node.tag not in {"td", "th", "b", "strong", "span"}:
             continue
         node_text = re.sub(r"\s+", " ", text(node)).strip()
-        if normalized(node_text) not in labels:
+        if normalized(node_text) not in UPLOAD_LABELS:
             continue
         cell = node
         while cell.parent and cell.tag not in {"td", "th"}:
@@ -236,7 +285,7 @@ def parse_nexus_profile(source, uid):
         if cell.tag not in {"td", "th"}:
             continue
         full = re.sub(r"\s+", " ", text(cell)).strip()
-        if normalized(full) in labels:
+        if normalized(full) in UPLOAD_LABELS:
             siblings = [child for child in cell.parent.children if isinstance(child, Node) and child.tag in {"td", "th"}]
             index = siblings.index(cell)
             if index + 1 >= len(siblings):
@@ -252,11 +301,7 @@ def parse_nexus_profile(source, uid):
             samples.append(cell_sample(cell, value))
         except DataError:
             continue
-    if not samples:
-        raise DataError("未找到目标用户上传量，可能为隐私限制、Cookie 失效或页面改版")
-    if len({(item["uploaded_bytes"], item["lower_bound_bytes"]) for item in samples}) != 1:
-        raise DataError("页面包含多个不同的上传量，无法可靠判断")
-    return dict(samples[0], username=label(text(heading)) or str(uid))
+    return dict(_unique_nexus_sample(samples), username=label(text(heading)) or str(uid))
 
 
 def progress(sample, goal):
