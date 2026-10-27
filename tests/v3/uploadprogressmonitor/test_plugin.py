@@ -1,5 +1,6 @@
 """宿主、HTTP、调度和通知边界均使用替身，不访问真实客户或站点。"""
 from copy import deepcopy
+from datetime import datetime, timezone
 from decimal import Decimal
 from threading import Event, Lock
 from types import SimpleNamespace
@@ -287,6 +288,138 @@ def test_transport_exceptions_do_not_expose_credentials(plugin, monkeypatch):
     with pytest.raises(DataError) as captured:
         plugin._read_user(site(), 77)
     assert "private" not in str(captured.value) and "RuntimeError" in str(captured.value)
+
+
+def nexus_response(amount="2.000", uid=77):
+    body = (f'<h1><a href="userdetails.php?id={uid}">sample</a></h1>'
+            f'<table><tr><td>上传量</td><td>{amount} TB</td></tr></table>')
+    return SimpleNamespace(status_code=200, content=body.encode())
+
+
+def retry_stop():
+    return Mock(is_set=Mock(return_value=False), wait=Mock(return_value=False))
+
+
+@pytest.mark.parametrize("site_id", ["10", "20"])
+def test_retry_recovers_from_no_response_and_server_error_once_per_user(plugin, monkeypatch, site_id):
+    success = (SimpleNamespace(status_code=200, json=lambda: {"code": "0", "data": {
+        "id": 77, "memberCount": {"uploaded": 2 * TB}}}) if site_id == "10" else nexus_response())
+    client = Mock()
+    method = client.post_res if site_id == "10" else client.get_res
+    method.side_effect = [None, SimpleNamespace(status_code=503), success]
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(module, "RequestUtils", factory)
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(site_id=site_id)))
+    plugin._stop = stop = retry_stop()
+    plugin.run_check()
+    result = plugin.get_data("last_result")
+    assert len(result["rows"]) == 1 and result["rows"][0]["status"] == "pending"
+    assert result["rows"][0]["uploaded_bytes"] == 2 * TB
+    assert method.call_count == 3 and [call.args[0] for call in stop.wait.call_args_list] == [5, 10]
+    assert all(call.kwargs["timeout"] == 30 for call in factory.call_args_list)
+    assert plugin.post_message.call_count == 1 and "【查询失败】" not in plugin.post_message.call_args.kwargs["text"]
+
+
+def test_exhausted_retries_keep_previous_success_and_continue_next_user(plugin, monkeypatch):
+    client = Mock()
+    client.get_res.side_effect = [None, None, None, nexus_response("6.000", uid=78)]
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(site_id="20"), **task(2, site_id="20", uid="78")))
+    previous = dict(sample(), checked_at="2026-10-27 20:00:00")
+    plugin.save_data("last_success", {"20:77": previous})
+    plugin._stop = stop = retry_stop()
+    plugin.run_check()
+    rows = plugin.get_data("last_result")["rows"]
+    assert [row["status"] for row in rows] == ["error", "completed"]
+    assert "已尝试 3 次" in rows[0]["error"] and rows[0]["last_uploaded_bytes"] == 2 * TB
+    assert plugin.get_data("last_success")["20:77"] == previous
+    assert client.get_res.call_count == 4 and plugin.post_message.call_count == 1
+    assert [call.args[0] for call in stop.wait.call_args_list] == [5, 10, module.REQUEST_INTERVAL]
+
+
+@pytest.mark.parametrize("error", [TimeoutError("private-cookie"), ConnectionError("private-api-key")])
+def test_transport_io_errors_retry_without_logging_secrets(plugin, monkeypatch, error):
+    client = Mock()
+    client.get_res.side_effect = [error, nexus_response()]
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    monkeypatch.setattr(module, "logger", Mock())
+    stop = retry_stop()
+    result = plugin._read_user_with_retry(site(20, "Audiences", "https://audiences.me"), 77, stop)
+    assert result["uploaded_bytes"] == 2 * TB and client.get_res.call_count == 2
+    stop.wait.assert_called_once_with(5)
+    assert "private" not in repr(module.logger.mock_calls)
+
+
+@pytest.mark.parametrize("response", [
+    SimpleNamespace(status_code=403), SimpleNamespace(status_code=404),
+    SimpleNamespace(status_code=200, content=b'<form action="takelogin.php"></form>'),
+    SimpleNamespace(status_code=200, content=b'<h1>sample</h1><p>hidden</p>'),
+])
+def test_permanent_http_login_and_profile_errors_are_not_retried(plugin, monkeypatch, response):
+    client = Mock()
+    client.get_res.return_value = response
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    stop = retry_stop()
+    with pytest.raises(DataError):
+        plugin._read_user_with_retry(site(20, "Audiences", "https://audiences.me"), 77, stop)
+    assert client.get_res.call_count == 1
+    stop.wait.assert_not_called()
+
+
+def test_mteam_business_auth_error_is_not_retried(plugin, monkeypatch):
+    client = Mock()
+    client.post_res.return_value = SimpleNamespace(status_code=200, json=lambda: {"code": "401", "message": "private-api-key"})
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    stop = retry_stop()
+    with pytest.raises(DataError, match="API 拒绝"):
+        plugin._read_user_with_retry(site(), 77, stop)
+    assert client.post_res.call_count == 1
+    stop.wait.assert_not_called()
+
+
+@pytest.mark.parametrize("reenable", [False, True])
+def test_stop_during_retry_wait_aborts_round_without_restarting_request(plugin, monkeypatch, reenable):
+    client = Mock()
+    client.get_res.return_value = None
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    config = dict(DEFAULTS, enabled=True, **task(site_id="20"))
+    plugin.init_plugin(config)
+    class StopOnWait(Event):
+        def wait(self, timeout=None):
+            plugin.init_plugin(dict(config, enabled=False))
+            if reenable:
+                plugin.init_plugin(config)
+            return self.is_set()
+    plugin._stop = old_stop = StopOnWait()
+    plugin.run_check()
+    result = plugin.get_data("last_result")
+    assert old_stop.is_set() and result["status"] == "stopped" and result["rows"] == []
+    assert client.get_res.call_count == 1 and not plugin._lock.locked()
+    plugin.post_message.assert_not_called()
+    if reenable:
+        assert plugin._stop is not old_stop and not plugin._stop.is_set()
+
+
+@pytest.mark.parametrize("header,delay", [
+    ("12", 12), ("Tue, 27 Oct 2026 21:00:20 GMT", 20), ("invalid", 5), ("7200", None),
+])
+def test_retry_respects_retry_after_and_defers_long_server_waits(plugin, monkeypatch, header, delay):
+    client = Mock()
+    client.get_res.side_effect = [SimpleNamespace(status_code=429, headers={"Retry-After": header}), nexus_response()]
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    fixed_now = datetime(2026, 10, 27, 21, tzinfo=timezone.utc)
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(now=lambda tz: fixed_now))
+    stop = retry_stop()
+    selected = site(20, "Audiences", "https://audiences.me")
+    if delay is None:
+        with pytest.raises(DataError, match="本轮不再重试"):
+            plugin._read_user_with_retry(selected, 77, stop)
+        assert client.get_res.call_count == 1
+        stop.wait.assert_not_called()
+    else:
+        assert plugin._read_user_with_retry(selected, 77, stop)["uploaded_bytes"] == 2 * TB
+        stop.wait.assert_called_once_with(delay)
+        assert client.get_res.call_count == 2
 
 
 def test_reconfigure_keeps_current_round_snapshot(plugin):

@@ -1,6 +1,8 @@
 """按用户和站点监控累计上传量，每轮通过 MP 通知渠道汇总进度。"""
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from math import ceil
 import re
 from threading import Event, Lock
 from time import monotonic
@@ -21,7 +23,36 @@ from .ui import config_form, details_page
 
 DEFAULTS = {"enabled": False, "notify": True, "onlyonce": False, "cron": "0 * * * *", **task_defaults()}
 REQUEST_INTERVAL = 2
+RETRY_DELAYS = (5, 10)
+RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504}
+MAX_RETRY_WAIT = 60
 API_BASE = "https://api.m-team.cc/api"
+
+
+class _RetryableRequestError(DataError):
+    """仅临时网络失败进入重试，凭据和资料解析错误直接结束。"""
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class _CheckStopped(Exception):
+    """停止当前查询，不把主动停止记成用户查询失败。"""
+
+
+def _retry_after(response):
+    raw = (getattr(response, "headers", None) or {}).get("Retry-After")
+    if not isinstance(raw, str):
+        return None
+    try:
+        if raw.strip().isdigit():
+            return int(raw.strip())
+        deadline = parsedate_to_datetime(raw)
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        return max(0, ceil((deadline - datetime.now(timezone.utc)).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def adapter_for(site):
@@ -35,7 +66,7 @@ class UploadProgressMonitor(_PluginBase):
     plugin_name = "上传量进度监控"
     plugin_desc = "监控用户上传量，定时推送任务进度。"
     plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.png"
-    plugin_version = "0.1.6"
+    plugin_version = "0.1.7"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "uploadprogressmonitor_"
@@ -168,11 +199,15 @@ class UploadProgressMonitor(_PluginBase):
                         if adapter == "mteam" else
                         client.get_res(urljoin(str(site.url).rstrip("/") + "/", "userdetails.php"),
                                        params={"id": uid}, allow_redirects=False))
+        except OSError as error:
+            raise _RetryableRequestError(f"网络请求异常（{type(error).__name__}）") from None
         except Exception as error:
             raise DataError(f"网络请求异常（{type(error).__name__}）") from None
         logger.info(f"上传量进度监控：站点 ID {site.id}，UID {uid}，HTTP {response.status_code if response is not None else '无响应'}，耗时 {monotonic() - started:.1f} 秒")
         if response is None:
-            raise DataError("站点请求失败或超时")
+            raise _RetryableRequestError("站点请求失败或超时")
+        if response.status_code in RETRYABLE_HTTP:
+            raise _RetryableRequestError(f"站点返回 HTTP {response.status_code}", _retry_after(response))
         if response.status_code != 200:
             raise DataError(f"站点返回 HTTP {response.status_code}，请检查地址、Cookie 或访问限制")
         if adapter == "nexusphp":
@@ -184,6 +219,30 @@ class UploadProgressMonitor(_PluginBase):
         if not isinstance(payload, dict) or str(payload.get("code")) != "0":
             raise DataError("馒头 API 拒绝请求，请检查该站点 API Key 和资料访问权限")
         return parse_mteam_profile(payload.get("data"), uid)
+
+    def _read_user_with_retry(self, site, uid, stop):
+        """每账号最多三次查询；等待可被本轮的停止信号打断。"""
+        attempts = len(RETRY_DELAYS) + 1
+        for attempt in range(1, attempts + 1):
+            if stop.is_set():
+                raise _CheckStopped()
+            try:
+                sample = self._read_user(site, uid)
+            except _RetryableRequestError as error:
+                if stop.is_set():
+                    raise _CheckStopped() from None
+                if error.retry_after is not None and error.retry_after > MAX_RETRY_WAIT:
+                    raise DataError(f"{error}，站点要求等待 {error.retry_after} 秒，本轮不再重试") from None
+                if attempt == attempts:
+                    raise DataError(f"{error}（已尝试 {attempts} 次）") from None
+                delay = max(RETRY_DELAYS[attempt - 1], error.retry_after or 0)
+                logger.warning(f"上传量进度监控：站点 ID {site.id}，UID {uid}，{error}；{delay} 秒后重试（第 {attempt + 1}/{attempts} 次）")
+                if stop.wait(delay):
+                    raise _CheckStopped() from None
+            else:
+                if attempt > 1:
+                    logger.info(f"上传量进度监控：站点 ID {site.id}，UID {uid}，重试成功（第 {attempt}/{attempts} 次）")
+                return sample
 
     def run_check(self):
         """每轮独立查询全部启用任务，完成任务也继续参与后续小时汇总。"""
@@ -241,8 +300,8 @@ class UploadProgressMonitor(_PluginBase):
             try:
                 if site is None:
                     raise DataError("绑定站点不存在，请在任务配置中重新选择")
-                sample = self._read_user(site, task["uid"])
-                row.update(sample)
+                sample = self._read_user_with_retry(site, task["uid"], stop)
+                row.update(sample, checked_at=self._now())
                 row.update(progress(sample, task["initial_bytes"], task["total_bytes"]))
                 if old.get("uploaded_bytes") is not None:
                     row["delta_bytes"] = sample["uploaded_bytes"] - old["uploaded_bytes"]
@@ -253,6 +312,8 @@ class UploadProgressMonitor(_PluginBase):
                                        or self._now()) if row["status"] == "completed" else None
                 states[task["key"]] = {key: row.get(key) for key in ("username", "uploaded_bytes", "approximate", "initial_bytes", "total_bytes", "completed_at")}
                 states[task["key"]]["checked_at"] = row["checked_at"]
+            except _CheckStopped:
+                return
             except DataError as error:
                 row["status"] = "error"
                 row["error"] = str(error)
