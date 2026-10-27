@@ -32,9 +32,14 @@ def config_form(sites, error=None):
             col(node("VSelect", props={"model": prefix + "unit", "label": "目标单位", "items": [
                 {"title": "GiB（站点 GB）", "value": "GiB"}, {"title": "TiB（站点 TB）", "value": "TiB"},
                 {"title": "PiB（站点 PB）", "value": "PiB"}]}), 3),
+            col(node("VTextField", props={"model": prefix + "total", "label": "任务总量（可选）", "type": "number", "min": 0, "step": "any",
+                "hint": "初始上传量 = 目标累计上传量 − 任务总量；留空沿用累计进度", "persistent-hint": True}), 9),
+            col(node("VSelect", props={"model": prefix + "total_unit", "label": "任务总量单位", "items": [
+                {"title": "GiB（站点 GB）", "value": "GiB"}, {"title": "TiB（站点 TB）", "value": "TiB"},
+                {"title": "PiB（站点 PB）", "value": "PiB"}]}), 3),
             col(node("VSwitch", props={"model": prefix + "enabled", "label": "监控此任务", "color": "primary", "hide-details": True}), 6),
             col(node("VBtn", "移除此任务", {"color": "error", "variant": "text", "onClick":
-                f"() => {{ model.{prefix}visible = false; model.{prefix}uid = ''; model.{prefix}site_id = ''; model.{prefix}target = ''; model.{prefix}label = ''; model.{prefix}unit = 'TiB'; model.{prefix}enabled = true; }}"}), 6),
+                f"() => {{ model.{prefix}visible = false; model.{prefix}uid = ''; model.{prefix}site_id = ''; model.{prefix}target = ''; model.{prefix}total = ''; model.{prefix}label = ''; model.{prefix}unit = 'TiB'; model.{prefix}total_unit = 'TiB'; model.{prefix}enabled = true; }}"}), 6),
         ]
         title = node("VExpansionPanelTitle", content=[node("div", props={"class": "d-flex align-center ga-3"}, content=[
             node("span", f"任务 {index}"), node("VChip", props={"size": "small", "variant": "tonal", "color": "primary"},
@@ -76,7 +81,7 @@ def details_page(result, error=None):
                                                    node("div", count, {"class": "text-h5 font-weight-bold " + css})]), 3))
         summary[-1]["props"]["cols"] = 6
     details = [node("div", props={"class": "d-flex align-center justify-space-between mb-4"}, content=[
-        node("div", "累计上传量进度", {"class": "text-subtitle-1 font-weight-bold"}),
+        node("div", "上传任务进度", {"class": "text-subtitle-1 font-weight-bold"}),
         node("VChip", status, {"color": color, "variant": "tonal", "size": "small"}),
     ]), node("VRow", props={"class": "mb-3"}, content=summary)]
     if result.get("status") == "running":
@@ -92,8 +97,6 @@ def details_page(result, error=None):
     elif not result:
         content.append(node("VAlert", props={"type": "info", "variant": "tonal", "class": "mb-4",
                                             "text": "在配置页添加用户、绑定站点并填写目标上传量；保存后可立即检查。"}))
-    if result.get("notification"):
-        content.append(node("div", result["notification"], {"class": "text-caption text-medium-emphasis mb-4"}))
     for key, title, section_color in (("pending", "待完成", "warning"), ("completed", "已完成", "success"), ("error", "查询失败", "error")):
         matching = [row for row in rows if row["status"] == key]
         if not matching:
@@ -114,12 +117,21 @@ def details_page(result, error=None):
                                  node("VProgressLinear", props={"model-value": row["percent"], "height": 5, "rounded": True, "color": section_color}),
                                  node("div", f"剩余 {format_bytes(row['remaining_bytes'])}" if key == "pending" else f"首次发现达标：{row.get('completed_at') or '—'}",
                                       {"class": "text-caption text-medium-emphasis mt-1"})]
+                if row.get("total_bytes") is not None:
+                    progress_cell.append(node("div", "已完成 " + ("约 " if row["approximate"] else "") + f"{format_bytes(row['task_uploaded_bytes'])} / {format_bytes(row['total_bytes'])}",
+                                              {"class": "text-caption text-medium-emphasis mt-1"}))
+                else:
+                    progress_cell.append(node("div", "按累计上传量计算", {"class": "text-caption text-medium-emphasis mt-1"}))
                 for note in (row.get("precision_note"), row.get("warning")):
                     if note:
                         current.append(node("div", note, {"class": "text-caption text-warning"}))
             delta = row.get("delta_bytes")
+            target = [node("div", format_bytes(row["target_bytes"]))]
+            if row.get("total_bytes") is not None:
+                target.extend([node("div", f"任务总量 {format_bytes(row['total_bytes'])}", {"class": "text-caption text-medium-emphasis"}),
+                               node("div", f"初始上传量 {format_bytes(row['initial_bytes'])}", {"class": "text-caption text-medium-emphasis"})])
             cells = [node("td", props={"class": "py-3"}, content=account), node("td", row["site_name"]),
-                     node("td", content=current), node("td", format_bytes(row["target_bytes"])),
+                     node("td", content=current), node("td", content=target),
                      node("td", props={"style": "min-width: 180px"}, content=progress_cell),
                      node("td", ("+" if delta is not None and delta >= 0 else "") + format_bytes(delta)),
                      node("td", row.get("checked_at", "—"))]

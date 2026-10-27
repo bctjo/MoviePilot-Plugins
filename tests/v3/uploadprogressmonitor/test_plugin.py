@@ -135,6 +135,48 @@ def test_editing_goal_recomputes_completion_without_old_delivery_state(plugin):
     assert row["completed_at"] is None
 
 
+def test_task_volume_recomputes_progress_after_reconfigure_and_reaches_notifications(plugin):
+    plugin._read_user = Mock(return_value=sample(44 * TIB))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(target="50", total="10")))
+    plugin.run_check()
+    row = plugin.get_data("last_result")["rows"][0]
+    assert row["initial_bytes"] == 40 * TIB and row["percent"] == 40
+    assert row["task_uploaded_bytes"] == 4 * TIB
+    page = repr(plugin.get_page())
+    assert "初始上传量 40.00 TiB" in page and "已完成 4.00 TiB / 10.00 TiB" in page
+    assert "本次已完成：4.00 TiB" in plugin.post_message.call_args.kwargs["text"]
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(target="50", total="20")))
+    plugin.run_check()
+    row = plugin.get_data("last_result")["rows"][0]
+    assert row["initial_bytes"] == 30 * TIB and row["percent"] == 70
+
+
+def test_changing_task_total_resets_first_completion_for_new_task(plugin):
+    plugin._read_user = Mock(return_value=sample(6 * TIB))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(total="2")))
+    plugin._now = Mock(return_value="2026-10-27 10:00:00")
+    plugin.run_check()
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(total="3")))
+    plugin._now = Mock(return_value="2026-10-27 11:00:00")
+    plugin.run_check()
+    row = plugin.get_data("last_result")["rows"][0]
+    assert row["completed_at"] == "2026-10-27 11:00:00"
+    plugin._now = Mock(return_value="2026-10-27 12:00:00")
+    plugin.run_check()
+    assert plugin.get_data("last_result")["rows"][0]["completed_at"] == "2026-10-27 11:00:00"
+
+
+def test_notification_submission_status_is_hidden_including_pre_update_results(plugin):
+    plugin._read_user = Mock(return_value=sample())
+    plugin.run_check()
+    assert plugin.post_message.call_count == 1
+    assert "已提交" not in repr(plugin.get_page())
+    result = plugin.get_data("last_result")
+    result["notification"] = "已提交 MP 通知渠道 1/1 批（不代表收件端送达）"
+    plugin.save_data("last_result", result)
+    assert "不代表收件端送达" not in repr(plugin.get_page())
+
+
 def test_deleted_site_does_not_query_another_site(plugin, monkeypatch):
     monkeypatch.setattr(module, "SiteOper", Mock(return_value=SimpleNamespace(list_order_by_pri=lambda: [])))
     plugin._read_user = Mock()

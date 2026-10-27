@@ -83,6 +83,31 @@ def test_partial_task_requires_uid_site_and_goal():
         parse_tasks(config_task(site_id=""))
 
 
+def test_task_total_infers_initial_upload_and_supports_independent_units():
+    task = parse_tasks(config_task(target="5", total="2048", total_unit="GiB"))[0]
+    assert task["target_bytes"] == 5 * TIB
+    assert task["total_bytes"] == 2 * TIB and task["initial_bytes"] == 3 * TIB
+    task = parse_tasks(config_task(total="5"))[0]
+    assert task["initial_bytes"] == 0
+
+
+@pytest.mark.parametrize("total", [None, "", "  "])
+def test_optional_task_total_preserves_existing_cumulative_mode(total):
+    task = parse_tasks(config_task(total=total))[0]
+    assert task["total_bytes"] is None and task["initial_bytes"] is None
+
+
+@pytest.mark.parametrize("total", ["0", "-1", "NaN", "Infinity", "abc", True, "6"])
+def test_task_total_must_be_positive_and_no_larger_than_cumulative_goal(total):
+    with pytest.raises(DataError, match="任务 1：任务总量"):
+        parse_tasks(config_task(total=total))
+
+
+def test_task_total_alone_is_incomplete_instead_of_silently_skipped():
+    with pytest.raises(DataError, match="任务 1"):
+        parse_tasks({"task_1_total": "2"})
+
+
 def test_mteam_reads_requested_member_total_and_keeps_large_integer_precision():
     count = 18_446_744_073_709_551_615
     parsed = parse_mteam_profile({"id": "77", "username": "sample", "memberCount": {"uploaded": str(count)}}, 77)
@@ -205,6 +230,36 @@ def test_threshold_uses_current_total_not_growth_since_start():
     assert progress(sample, 5 * TIB)["status"] == "completed"
     assert progress(sample, 6 * TIB)["status"] == "pending"
     assert format_bytes(5 * TIB) == "5.00 TiB"
+
+
+@pytest.mark.parametrize("current,percent,done,status", [
+    (39, 0, 0, "pending"), (40, 0, 0, "pending"), (44, 40, 4, "pending"),
+    (50, 100, 10, "completed"), (55, 100, 10, "completed"),
+])
+def test_progress_uses_task_total_instead_of_account_lifetime_total(current, percent, done, status):
+    sample = {"uploaded_bytes": current * TIB, "lower_bound_bytes": current * TIB, "approximate": False}
+    result = progress(sample, 50 * TIB, 10 * TIB)
+    assert result["percent"] == percent and result["status"] == status
+    assert result["task_uploaded_bytes"] == done * TIB
+    assert result["remaining_bytes"] == max(0, (50 - current) * TIB)
+    assert progress(sample, 50 * TIB)["percent"] == min(100, current * 2)
+
+
+def test_rounded_boundary_does_not_show_a_full_task_bar_before_confirmed():
+    sample = parse_nexus_profile(audiences_page("5.000 TB"), 77)
+    result = progress(sample, 5 * TIB, 2 * TIB)
+    assert result["status"] == "pending" and result["percent"] == 99.9
+    assert result["precision_note"] and result["task_uploaded_bytes"] < 2 * TIB
+
+
+def test_task_notification_shows_initial_total_and_completed_volume():
+    sample = {"uploaded_bytes": 44 * TIB, "lower_bound_bytes": 44 * TIB, "approximate": False}
+    row = dict(parse_tasks(config_task(target="50", total="10"))[0], **sample, **progress(sample, 50 * TIB, 10 * TIB),
+               site_name="站点")
+    message = notification_texts({"rows": [row], "updated_at": "2026-10-27 10:00:00"})[0]
+    assert "目标上传量：50.00 TiB" in message
+    assert "任务总量：10.00 TiB · 初始：40.00 TiB" in message
+    assert "本次已完成：4.00 TiB" in message and "进度：40.0%" in message
 
 
 def test_grouped_notifications_keep_every_task_across_batches():

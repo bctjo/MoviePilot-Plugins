@@ -26,7 +26,7 @@ def label(value):
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))).strip()[:80]
 
 
-def target_bytes(value, unit):
+def target_bytes(value, unit, name="目标上传量"):
     try:
         number = Decimal(str(value))
         if isinstance(value, bool) or not number.is_finite() or number <= 0 or unit not in UNITS:
@@ -37,7 +37,7 @@ def target_bytes(value, unit):
             context.prec = max(64, len(number.as_tuple().digits) + 20)
             return max(1, int((number * UNITS[unit]).to_integral_value(rounding=ROUND_CEILING)))
     except (DecimalException, ValueError, TypeError, OverflowError):
-        raise DataError("目标上传量必须为大于 0 的数值，并选择有效单位") from None
+        raise DataError(f"{name}必须为大于 0 的数值，并选择有效单位") from None
 
 
 def task_defaults():
@@ -45,7 +45,7 @@ def task_defaults():
     result = {"open_panels": [1]}
     for index in range(1, MAX_TASKS + 1):
         for key, value in {"visible": index == 1, "enabled": True, "site_id": "", "uid": "",
-                           "target": "", "unit": "TiB", "label": ""}.items():
+                           "target": "", "unit": "TiB", "total": "", "total_unit": "TiB", "label": ""}.items():
             result[f"task_{index}_{key}"] = value
     return result
 
@@ -57,11 +57,16 @@ def parse_tasks(config):
         if not get("visible", index == 1) or not get("enabled", True):
             continue
         uid, site_id, target = get("uid", ""), get("site_id", ""), get("target", "")
-        if all(value is None or str(value).strip() == "" for value in (uid, site_id, target)):
+        total = get("total", "")
+        if all(value is None or str(value).strip() == "" for value in (uid, site_id, target, total)):
             continue
         try:
             uid, site_id = positive_id(uid), positive_id(site_id)
             goal = target_bytes(target, get("unit", "TiB"))
+            total = (target_bytes(total, get("total_unit", "TiB"), "任务总量")
+                     if total is not None and str(total).strip() else None)
+            if total is not None and total > goal:
+                raise DataError("任务总量不能大于目标累计上传量，否则初始上传量为负数")
         except DataError as error:
             raise DataError(f"任务 {index}：{error}") from None
         key = f"{site_id}:{uid}"
@@ -69,7 +74,8 @@ def parse_tasks(config):
             raise DataError(f"任务 {index}：同一站点和 UID 已存在，请合并重复任务")
         seen.add(key)
         tasks.append({"key": key, "slot": index, "uid": uid, "site_id": site_id,
-                      "target_bytes": goal, "label": label(get("label"))})
+                      "target_bytes": goal, "total_bytes": total,
+                      "initial_bytes": goal - total if total is not None else None, "label": label(get("label"))})
     return tasks
 
 
@@ -304,11 +310,16 @@ def parse_nexus_profile(source, uid):
     return dict(_unique_nexus_sample(samples), username=label(text(heading)) or str(uid))
 
 
-def progress(sample, goal):
-    """格式化页面的下界达到目标后才确认完成，避免四舍五入提前结单。"""
+def progress(sample, goal, total=None):
+    """任务按推算初始量计算；格式化数值的下界达到累计目标后才确认完成。"""
     complete = sample["lower_bound_bytes"] >= goal
-    percent = min(Decimal(100), Decimal(sample["lower_bound_bytes"]) * 100 / goal)
-    return {"status": "completed" if complete else "pending", "percent": float(percent.quantize(Decimal("0.1"))),
+    initial, amount = (goal - total, total) if total is not None else (0, goal)
+    done = min(amount, max(0, sample["lower_bound_bytes"] - initial))
+    percent = (Decimal(done) * 100 / amount).quantize(Decimal("0.1"))
+    if not complete:
+        percent = min(Decimal("99.9"), percent)
+    return {"status": "completed" if complete else "pending", "percent": float(percent),
+            "task_uploaded_bytes": done if total is not None else None,
             "remaining_bytes": max(0, goal - sample["lower_bound_bytes"]),
             "precision_note": "页面数值已四舍五入，临界值待确认" if sample["approximate"] and sample["uploaded_bytes"] >= goal and not complete else ""}
 
@@ -332,6 +343,9 @@ def notification_texts(result, limit=2800):
             else:
                 prefix = "约 " if row["approximate"] else ""
                 block += f"当前上传量：{prefix}{format_bytes(row['uploaded_bytes'])}\n目标上传量：{format_bytes(row['target_bytes'])}"
+                if row.get("total_bytes") is not None:
+                    block += (f"\n任务总量：{format_bytes(row['total_bytes'])} · 初始：{format_bytes(row['initial_bytes'])}"
+                              f"\n本次已完成：{prefix}{format_bytes(row['task_uploaded_bytes'])}")
                 if status == "pending":
                     block += f"\n进度：{row['percent']}% · 剩余：{format_bytes(row['remaining_bytes'])}"
                 if row.get("delta_bytes") is not None:
