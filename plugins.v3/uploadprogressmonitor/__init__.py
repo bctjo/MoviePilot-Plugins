@@ -33,9 +33,9 @@ def adapter_for(site):
 class UploadProgressMonitor(_PluginBase):
     """填写初始上传量及任务总量，按本次任务计算进度。"""
     plugin_name = "上传量进度监控"
-    plugin_desc = "为每位用户绑定站点、初始上传量和任务总量，每小时汇总待完成、已完成及查询失败的任务。"
-    plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.svg"
-    plugin_version = "0.1.5"
+    plugin_desc = "监控用户上传量，定时推送任务进度。"
+    plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.png"
+    plugin_version = "0.1.6"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "uploadprogressmonitor_"
