@@ -121,8 +121,7 @@ def test_task_total_alone_is_incomplete_instead_of_silently_skipped():
 def test_mteam_reads_requested_member_total_and_keeps_large_integer_precision():
     count = 18_446_744_073_709_551_615
     parsed = parse_mteam_profile({"id": "77", "username": "sample", "memberCount": {"uploaded": str(count)}}, 77)
-    assert parsed["uploaded_bytes"] == count and not parsed["approximate"]
-    assert parsed["lower_bound_bytes"] == count
+    assert parsed["uploaded_bytes"] == count
     assert parse_mteam_profile({"id": 77, "memberCount": {"uploaded": "0"}}, 77)["uploaded_bytes"] == 0
 
 
@@ -140,16 +139,16 @@ def test_mteam_cannot_substitute_a_different_user():
 def test_nexus_reads_target_not_navbar_or_real_upload():
     parsed = parse_nexus_profile(nexus_page(exact=5 * TB), 77)
     assert parsed["username"] == "sample-user"
-    assert parsed["uploaded_bytes"] == 5 * TB and not parsed["approximate"]
+    assert parsed["uploaded_bytes"] == 5 * TB
     assert progress(parsed, 0, 5 * TB)["status"] == "completed"
 
 
 @pytest.mark.parametrize("traditional", [False, True])
-def test_formatted_nexus_boundary_is_pending_until_precision_confirms(traditional):
+def test_formatted_nexus_upload_matching_goal_is_completed(traditional):
     sample = parse_nexus_profile(nexus_page(traditional=traditional), 77)
-    assert sample["approximate"]
     state = progress(sample, 0, 5 * TB)
-    assert state["status"] == "pending" and state["precision_note"]
+    assert state["status"] == "completed" and state["percent"] == 100
+    assert state["remaining_bytes"] == 0
     assert progress(parse_nexus_profile(nexus_page("5.01 TB", traditional=traditional), 77), 0, 5 * TB)["status"] == "completed"
 
 
@@ -190,14 +189,14 @@ def test_audiences_card_reads_upload_row_and_name_without_h1():
     sample = parse_nexus_profile(source, 77)
     assert sample["username"] == "card-user"
     assert sample["uploaded_bytes"] == 6 * TB + TB // 8
-    assert sample["approximate"] and progress(sample, 0, 5 * TB)["status"] == "completed"
+    assert progress(sample, 0, 5 * TB)["status"] == "completed"
 
 
-def test_audiences_card_preserves_rounding_and_exact_byte_behavior():
+def test_audiences_card_uses_visible_upload_without_deducting_margin():
     sample = parse_nexus_profile(audiences_page("5.000 TB"), 77)
-    assert progress(sample, 0, 5 * TB)["status"] == "pending"
-    sample = parse_nexus_profile(audiences_page("5.000 TB", exact=5 * TB), 77)
-    assert sample["uploaded_bytes"] == 5 * TB and not sample["approximate"]
+    assert progress(sample, 0, 5 * TB)["status"] == "completed"
+    sample = parse_nexus_profile(audiences_page("5.000 TB", exact=5 * TB - 1), 77)
+    assert sample["uploaded_bytes"] == 5 * TB
     assert progress(sample, 0, 5 * TB)["status"] == "completed"
 
 
@@ -236,7 +235,7 @@ def test_nexus_login_form_without_heading_reports_login_failure():
 
 
 def test_threshold_uses_current_total_not_growth_since_start():
-    sample = {"uploaded_bytes": 5 * TB, "lower_bound_bytes": 5 * TB, "approximate": False}
+    sample = {"uploaded_bytes": 5 * TB}
     assert progress(sample, 2 * TB, 3 * TB)["status"] == "completed"
     assert progress(sample, 2 * TB, 4 * TB)["status"] == "pending"
     assert format_bytes(5 * TB) == "5.00 TB"
@@ -247,22 +246,45 @@ def test_threshold_uses_current_total_not_growth_since_start():
     (50, 100, 10, "completed"), (55, 100, 10, "completed"),
 ])
 def test_progress_uses_task_total_instead_of_account_lifetime_total(current, percent, done, status):
-    sample = {"uploaded_bytes": current * TB, "lower_bound_bytes": current * TB, "approximate": False}
+    sample = {"uploaded_bytes": current * TB}
     result = progress(sample, 40 * TB, 10 * TB)
     assert result["percent"] == percent and result["status"] == status
     assert result["task_uploaded_bytes"] == done * TB
     assert result["remaining_bytes"] == max(0, (50 - current) * TB)
 
 
-def test_rounded_boundary_does_not_show_a_full_task_bar_before_confirmed():
-    sample = parse_nexus_profile(audiences_page("5.000 TB"), 77)
-    result = progress(sample, 3 * TB, 2 * TB)
-    assert result["status"] == "pending" and result["percent"] == 99.9
-    assert result["precision_note"] and result["task_uploaded_bytes"] < 2 * TB
+@pytest.mark.parametrize("initial,unit,total,displayed", [
+    ("0.3", "TB", "5", "5.300 TB"),
+    ("0.1", "TB", "0.2", "0.300 TB"),
+    ("307.2", "GB", "5", "5.300 TB"),
+])
+def test_visible_upload_equal_to_decimal_goal_has_no_artificial_remainder(initial, unit, total, displayed):
+    task = parse_tasks(config_task(initial=initial, initial_unit=unit, total=total))[0]
+    sample = parse_nexus_profile(audiences_page(displayed), 77)
+    result = progress(sample, task["initial_bytes"], task["total_bytes"], task["target_bytes"])
+    assert sample["uploaded_bytes"] == task["target_bytes"]
+    assert result["status"] == "completed" and result["percent"] == 100
+    assert result["remaining_bytes"] == 0 and result["task_uploaded_bytes"] == task["total_bytes"]
+
+
+@pytest.mark.parametrize("displayed,status", [("5.299 TB", "pending"), ("5.300 TB", "completed"), ("5.301 TB", "completed")])
+def test_completion_compares_the_site_value_against_goal(displayed, status):
+    task = parse_tasks(config_task(initial="0.3", total="5"))[0]
+    sample = parse_nexus_profile(audiences_page(displayed), 77)
+    result = progress(sample, task["initial_bytes"], task["total_bytes"], task["target_bytes"])
+    assert result["status"] == status
+    assert (result["remaining_bytes"] > 0) == (status == "pending")
+
+
+def test_exact_api_counter_still_requires_reaching_target_byte():
+    below = progress({"uploaded_bytes": 5 * TB - 1}, 0, 5 * TB)
+    reached = progress({"uploaded_bytes": 5 * TB}, 0, 5 * TB)
+    assert below["status"] == "pending" and below["remaining_bytes"] == 1
+    assert reached["status"] == "completed" and reached["remaining_bytes"] == 0
 
 
 def test_task_notification_shows_initial_total_and_completed_volume():
-    sample = {"uploaded_bytes": 44 * TB, "lower_bound_bytes": 44 * TB, "approximate": False}
+    sample = {"uploaded_bytes": 44 * TB}
     row = dict(parse_tasks(config_task(initial="40", total="10"))[0], **sample, **progress(sample, 40 * TB, 10 * TB),
                site_name="站点")
     message = notification_texts({"rows": [row], "updated_at": "2026-10-27 10:00:00"})[0]
@@ -277,7 +299,7 @@ def test_grouped_notifications_keep_every_task_across_batches():
         row = {"uid": uid, "site_name": "站点", "label": f"客户-{uid:03}", "target_bytes": 5 * TB,
                "initial_bytes": 0, "total_bytes": 5 * TB, "task_uploaded_bytes": 2 * TB,
                "status": "error" if uid % 3 == 0 else "completed" if uid % 3 == 1 else "pending",
-               "error": "Cookie 失效", "uploaded_bytes": 2 * TB, "approximate": False,
+               "error": "Cookie 失效", "uploaded_bytes": 2 * TB,
                "percent": 40, "remaining_bytes": 3 * TB}
         rows.append(row)
     pages = notification_texts({"rows": rows, "updated_at": "2026-10-27 10:00:00"}, limit=1000)

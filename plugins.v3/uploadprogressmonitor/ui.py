@@ -112,9 +112,8 @@ def details_page(result, error=None):
                                  node("VProgressLinear", props={"model-value": row["percent"], "height": 5, "rounded": True, "color": section_color}),
                                  node("div", f"剩余 {format_bytes(row['remaining_bytes'])}" if key == "pending" else f"发现达标：{row.get('completed_at') or '—'}",
                                       {"class": "text-caption text-medium-emphasis mt-1"})]
-                for note in (row.get("precision_note"), row.get("warning")):
-                    if note:
-                        current.append(node("div", note, {"class": "text-caption text-warning"}))
+                if row.get("warning"):
+                    current.append(node("div", row["warning"], {"class": "text-caption text-warning"}))
             delta = row.get("delta_bytes")
             cells = [node("td", props={"class": "py-3"}, content=account), node("td", row["site_name"]),
                      node("td", content=current), node("td", format_bytes(row["target_bytes"])),

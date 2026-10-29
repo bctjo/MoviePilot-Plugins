@@ -66,7 +66,7 @@ class UploadProgressMonitor(_PluginBase):
     plugin_name = "上传量进度监控"
     plugin_desc = "监控用户上传量，定时推送任务进度。"
     plugin_icon = "https://raw.githubusercontent.com/bctjo/MoviePilot-Plugins/main/plugins.v3/uploadprogressmonitor/icon.png"
-    plugin_version = "0.1.7"
+    plugin_version = "0.1.8"
     plugin_author = "bctjo"
     author_url = "https://github.com/bctjo"
     plugin_config_prefix = "uploadprogressmonitor_"
@@ -302,7 +302,7 @@ class UploadProgressMonitor(_PluginBase):
                     raise DataError("绑定站点不存在，请在任务配置中重新选择")
                 sample = self._read_user_with_retry(site, task["uid"], stop)
                 row.update(sample, checked_at=self._now())
-                row.update(progress(sample, task["initial_bytes"], task["total_bytes"]))
+                row.update(progress(sample, task["initial_bytes"], task["total_bytes"], task["target_bytes"]))
                 if old.get("uploaded_bytes") is not None:
                     row["delta_bytes"] = sample["uploaded_bytes"] - old["uploaded_bytes"]
                     if row["delta_bytes"] < 0:
@@ -310,7 +310,7 @@ class UploadProgressMonitor(_PluginBase):
                 same_goal = (old.get("initial_bytes") == task["initial_bytes"] and old.get("total_bytes") == task["total_bytes"])
                 row["completed_at"] = ((old.get("completed_at") if same_goal else None)
                                        or self._now()) if row["status"] == "completed" else None
-                states[task["key"]] = {key: row.get(key) for key in ("username", "uploaded_bytes", "approximate", "initial_bytes", "total_bytes", "completed_at")}
+                states[task["key"]] = {key: row.get(key) for key in ("username", "uploaded_bytes", "initial_bytes", "total_bytes", "completed_at")}
                 states[task["key"]]["checked_at"] = row["checked_at"]
             except _CheckStopped:
                 return

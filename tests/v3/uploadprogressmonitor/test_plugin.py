@@ -1,7 +1,7 @@
 """宿主、HTTP、调度和通知边界均使用替身，不访问真实客户或站点。"""
 from copy import deepcopy
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from threading import Event, Lock
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -56,7 +56,7 @@ def plugin(monkeypatch):
 
 
 def sample(uploaded=2 * TB, username="sample"):
-    return {"username": username, "uploaded_bytes": uploaded, "lower_bound_bytes": uploaded, "approximate": False}
+    return {"username": username, "uploaded_bytes": uploaded}
 
 
 def test_default_schedule_is_hourly_and_once_uses_host_scheduler(plugin):
@@ -192,16 +192,17 @@ def test_nexus_displayed_upload_has_delta_after_second_success(plugin, monkeypat
     assert plugin.get_data("last_result")["rows"][0].get("delta_bytes") is None
     plugin.run_check()
     row = plugin.get_data("last_result")["rows"][0]
-    expected = int(Decimal(amount) * TB) - int(Decimal("5.010") * TB)
-    assert row["approximate"] and row["delta_bytes"] == expected
+    expected = (int((Decimal(amount) * TB).to_integral_value(rounding=ROUND_CEILING))
+                - int((Decimal("5.010") * TB).to_integral_value(rounding=ROUND_CEILING)))
+    assert row["delta_bytes"] == expected
     assert bool(row.get("warning")) == (expected < 0)
     assert expected_text in repr(plugin.get_page())
     assert f"较上次：{expected_text}" in plugin.post_message.call_args.kwargs["text"]
 
 
 def test_nexus_failed_round_keeps_last_success_for_next_delta(plugin):
-    before = dict(sample(5 * TB), approximate=True)
-    after = dict(sample(6 * TB), approximate=True)
+    before = sample(5 * TB)
+    after = sample(6 * TB)
     plugin._read_user = Mock(side_effect=[before, DataError("站点限流"), after])
     plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(site_id="20", total="10")))
     plugin.run_check()
@@ -258,6 +259,21 @@ def test_audiences_card_response_is_accepted_via_normal_request_path(plugin, mon
     sample = plugin._read_user(site(20, "Audiences", "https://audiences.me/"), 77)
     assert sample["username"] == "card-user" and sample["uploaded_bytes"] == 6 * TB + TB // 8
     assert factory.call_args.kwargs["cookies"] == "private-cookie"
+
+
+def test_nexus_visible_goal_completes_in_saved_result_and_notification(plugin, monkeypatch):
+    client = Mock()
+    client.get_res.return_value = nexus_response("5.300")
+    monkeypatch.setattr(module, "RequestUtils", Mock(return_value=client))
+    plugin.init_plugin(dict(DEFAULTS, enabled=True, **task(site_id="20", initial="0.3", total="5")))
+    plugin.run_check()
+    row = plugin.get_data("last_result")["rows"][0]
+    assert row["status"] == "completed" and row["percent"] == 100
+    assert row["remaining_bytes"] == 0 and row["completed_at"]
+    assert plugin.get_data("last_success")["20:77"]["uploaded_bytes"] == row["target_bytes"]
+    message = plugin.post_message.call_args.kwargs["text"]
+    assert "【已完成】" in message and "【待完成】" not in message
+    assert "100.0%" in repr(plugin.get_page())
 
 
 def test_nexus_old_chinese_encoding_and_missing_cookie_are_handled(plugin, monkeypatch):

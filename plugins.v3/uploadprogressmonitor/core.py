@@ -65,9 +65,15 @@ def parse_tasks(config):
             continue
         try:
             uid, site_id = positive_id(uid), positive_id(site_id)
+            initial_value, total_value = initial, total
             initial = amount_bytes(initial, get("initial_unit", "TB"), "初始上传量", allow_zero=True)
             total = amount_bytes(total, get("total_unit", "TB"))
-            goal = initial + total
+            # 先按原始输入相加再取整，避免两个小数分别取整后多出 1 字节。
+            with localcontext() as context:
+                context.prec = 160
+                configured_goal = (Decimal(str(initial_value)) * UNITS[get("initial_unit", "TB")]
+                                   + Decimal(str(total_value)) * UNITS[get("total_unit", "TB")])
+                goal = max(initial + 1, int(configured_goal.to_integral_value(rounding=ROUND_CEILING)))
             if goal > 2 ** 64 - 1:
                 raise DataError("初始上传量与任务总量相加超过支持范围")
         except DataError as error:
@@ -105,8 +111,7 @@ def parse_mteam_profile(data, uid):
         raise DataError("站点返回的用户 UID 与监控任务不一致")
     count = data.get("memberCount")
     uploaded = exact_bytes(count.get("uploaded") if isinstance(count, dict) else None)
-    return {"username": label(data.get("username")) or str(uid), "uploaded_bytes": uploaded,
-            "lower_bound_bytes": uploaded, "approximate": False}
+    return {"username": label(data.get("username")) or str(uid), "uploaded_bytes": uploaded}
 
 
 @dataclass
@@ -177,40 +182,13 @@ def parse_displayed_size(value):
     raw_unit = raw_unit.upper()
     power = {"K": 1, "M": 2, "G": 3, "T": 4, "P": 5, "E": 6}.get(raw_unit[0], 0)
     factor = 1024 ** power
-    center = number * factor
-    if power == 0 and number == number.to_integral_value():
-        return int(center), int(center), False, Decimal(1)
-    decimals = len(raw_number.split(".")[1]) if "." in raw_number else 0
-    step = Decimal(factor) / (10 ** decimals)
-    lower = int(max(Decimal(0), center - step / 2).to_integral_value(rounding=ROUND_CEILING))
-    return int(center), lower, True, step
-
-
-def cell_sample(cell, value):
-    uploaded, lower, approximate, step = parse_displayed_size(value)
-    exact = set()
-    for node in descendants(cell):
-        for name in ("data-bytes", "data-raw", "title"):
-            attribute = node.attrs.get(name)
-            if not attribute:
-                continue
-            match = re.fullmatch(r"\s*([0-9]+(?:,[0-9]{3})*)\s*(?:bytes?|字节|位元組)?\s*", attribute, re.I)
-            if match:
-                candidate = int(match.group(1).replace(",", ""))
-                if abs(Decimal(candidate) - uploaded) <= step / 2 + 1:
-                    exact.add(candidate)
-    if len(exact) > 1:
-        raise DataError("上传量精确字节数存在冲突")
-    if exact:
-        uploaded = lower = exact.pop()
-        approximate = False
-    return {"uploaded_bytes": uploaded, "lower_bound_bytes": lower, "approximate": approximate}
+    return int((number * factor).to_integral_value(rounding=ROUND_CEILING))
 
 
 def _unique_nexus_sample(samples):
     if not samples:
         raise DataError("未找到目标用户上传量，可能为隐私限制、Cookie 失效或页面改版")
-    if len({(item["uploaded_bytes"], item["lower_bound_bytes"]) for item in samples}) != 1:
+    if len({item["uploaded_bytes"] for item in samples}) != 1:
         raise DataError("页面包含多个不同的上传量，无法可靠判断")
     return samples[0]
 
@@ -247,7 +225,7 @@ def _parse_nexus_card(pages, uid):
     for name, value in fields:
         if name in UPLOAD_LABELS:
             try:
-                samples.append(cell_sample(value, text(value).strip()))
+                samples.append({"uploaded_bytes": parse_displayed_size(text(value).strip())})
             except DataError:
                 continue
     return dict(_unique_nexus_sample(samples), username=label(text(links[0])) or str(uid))
@@ -307,24 +285,24 @@ def parse_nexus_profile(source, uid):
             continue
         used.add(cell.position)
         try:
-            samples.append(cell_sample(cell, value))
+            samples.append({"uploaded_bytes": parse_displayed_size(value)})
         except DataError:
             continue
     return dict(_unique_nexus_sample(samples), username=label(text(heading)) or str(uid))
 
 
-def progress(sample, initial, total):
-    """按已填初始量计算本次进度，达到初始量与任务总量之和才确认完成。"""
-    goal = initial + total
-    complete = sample["lower_bound_bytes"] >= goal
-    done = min(total, max(0, sample["lower_bound_bytes"] - initial))
+def progress(sample, initial, total, goal=None):
+    """直接按读取的上传量计算，达到配置目标即完成，不扣除任何余量。"""
+    goal = initial + total if goal is None else goal
+    uploaded = sample["uploaded_bytes"]
+    complete = uploaded >= goal
+    done = total if complete else min(total, max(0, uploaded - initial))
     percent = (Decimal(done) * 100 / total).quantize(Decimal("0.1"))
     if not complete:
         percent = min(Decimal("99.9"), percent)
     return {"status": "completed" if complete else "pending", "percent": float(percent),
             "task_uploaded_bytes": done,
-            "remaining_bytes": max(0, goal - sample["lower_bound_bytes"]),
-            "precision_note": "页面数值已四舍五入，临界值待确认" if sample["approximate"] and sample["uploaded_bytes"] >= goal and not complete else ""}
+            "remaining_bytes": max(0, goal - uploaded)}
 
 
 def notification_texts(result, limit=2800):
@@ -351,9 +329,8 @@ def notification_texts(result, limit=2800):
                     block += f"\n进度：{row['percent']}% · 剩余：{format_bytes(row['remaining_bytes'])}"
                 if row.get("delta_bytes") is not None:
                     block += f"\n较上次：{'+' if row['delta_bytes'] >= 0 else ''}{format_bytes(row['delta_bytes'])}"
-                for note in (row.get("precision_note"), row.get("warning")):
-                    if note:
-                        block += "\n" + note
+                if row.get("warning"):
+                    block += "\n" + row["warning"]
             blocks.append(block)
     pages, current = [], header
     for block in blocks:
